@@ -79,3 +79,83 @@ NOTE_PROPERTIES = {
         11: 0.8   # 变宫：变化
     }
 }
+
+# 36键模式的音符映射
+GAME_NOTES_36KEY = {
+    # 高音区
+    'shift+Q': {'note': 84, 'name': '高音宫'},   # 高音宫
+    'shift+W': {'note': 86, 'name': '高音商'},   # 高音商
+    'shift+E': {'note': 88, 'name': '高音角'},   # 高音角
+    'shift+R': {'note': 89, 'name': '高音清角'}, # 高音清角
+    'shift+T': {'note': 91, 'name': '高音徵'},   # 高音徵
+    'shift+Y': {'note': 93, 'name': '高音羽'},   # 高音羽
+    'shift+U': {'note': 95, 'name': '高音变宫'}, # 高音变宫
+    
+    # 中高音区
+    'Q': {'note': 72, 'name': '中高音宫'},
+    'W': {'note': 74, 'name': '中高音商'},
+    'E': {'note': 76, 'name': '中高音角'},
+    'R': {'note': 77, 'name': '中高音清角'},
+    'T': {'note': 79, 'name': '中高音徵'},
+    'Y': {'note': 81, 'name': '中高音羽'},
+    'U': {'note': 83, 'name': '中高音变宫'},
+    
+    # 中音区
+    'A': {'note': 60, 'name': '中音宫'},
+    'S': {'note': 62, 'name': '中音商'},
+    'D': {'note': 64, 'name': '中音角'},
+    'F': {'note': 65, 'name': '中音清角'},
+    'G': {'note': 67, 'name': '中音徵'},
+    'H': {'note': 69, 'name': '中音羽'},
+    'J': {'note': 71, 'name': '中音变宫'},
+    
+    # 中低音区
+    'Z': {'note': 48, 'name': '中低音宫'},
+    'X': {'note': 50, 'name': '中低音商'},
+    'C': {'note': 52, 'name': '中低音角'},
+    'V': {'note': 53, 'name': '中低音清角'},
+    'B': {'note': 55, 'name': '中低音徵'},
+    'N': {'note': 57, 'name': '中低音羽'},
+    'M': {'note': 59, 'name': '中低音变宫'},
+    
+    # 低音区
+    'ctrl+Z': {'note': 36, 'name': '低音宫'},
+    'ctrl+X': {'note': 38, 'name': '低音商'},
+    'ctrl+C': {'note': 40, 'name': '低音角'},
+    'ctrl+V': {'note': 41, 'name': '低音清角'},
+    'ctrl+B': {'note': 43, 'name': '低音徵'},
+    'ctrl+N': {'note': 45, 'name': '低音羽'},
+    'ctrl+M': {'note': 47, 'name': '低音变宫'},
+}
+
+# 创建36键模式的反向映射
+NOTE_TO_KEY_36KEY = {info['note']: key for key, info in GAME_NOTES_36KEY.items()}
+
+# 36键模式的八度基准音
+OCTAVE_BASES_36KEY = {
+    'low': 36,     # 低音宫
+    'mid_low': 48, # 中低音宫
+    'middle': 60,  # 中音宫
+    'mid_high': 72,# 中高音宫
+    'high': 84     # 高音宫
+}
+
+# 定义两种模式的配置
+PLAY_MODES = {
+    '21key': {
+        'name': '21键模式',
+        'notes': GAME_NOTES,
+        'note_to_key': NOTE_TO_KEY,
+        'octave_bases': OCTAVE_BASES,
+        'playable_min': 48,  # 低音宫
+        'playable_max': 83   # 高音变宫
+    },
+    '36key': {
+        'name': '36键模式',
+        'notes': GAME_NOTES_36KEY,
+        'note_to_key': NOTE_TO_KEY_36KEY,
+        'octave_bases': OCTAVE_BASES_36KEY,
+        'playable_min': 36,  # 低音宫
+        'playable_max': 95   # 高音变宫
+    }
+}

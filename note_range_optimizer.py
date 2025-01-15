@@ -1,15 +1,23 @@
 import numpy as np
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
-from keyboard_mapping import NOTE_TO_KEY, PENTATONIC_INTERVALS, OCTAVE_BASES, GAME_NOTES
+from keyboard_mapping import NOTE_TO_KEY, PENTATONIC_INTERVALS, OCTAVE_BASES, GAME_NOTES, PLAY_MODES
 
 class NoteRangeOptimizer:
     """音域优化处理类"""
-    def __init__(self, playable_min: int = 48, playable_max: int = 83):
-        # 可播放音域范围
-        self.playable_min = playable_min  # 最低音（低音1）
-        self.playable_max = playable_max  # 最高音（高音7）
-        self.playable_range = playable_max - playable_min
+    def __init__(self, mode='21key'):
+        # 获取当前模式的配置
+        self.mode_config = PLAY_MODES[mode]
+        self.playable_min = self.mode_config['playable_min']
+        self.playable_max = self.mode_config['playable_max']
+        self.playable_range = self.playable_max - self.playable_min
+        
+        # 使用当前模式的映射
+        self.target_notes = set(self.mode_config['note_to_key'].keys())
+        self.octave_bases = self.mode_config['octave_bases']
+        
+        # 保持五声音阶定义
+        self.pentatonic_intervals = PENTATONIC_INTERVALS
         
         # 音符权重配置
         self.weights = {
@@ -20,11 +28,6 @@ class NoteRangeOptimizer:
             'pentatonic': 0.05,   # 降低五声音阶匹配权重
             'octave_balance': 0.05 # 降低八度平衡权重
         }
-        
-        # 定义目标音阶
-        self.target_notes = set(NOTE_TO_KEY.keys())
-        self.pentatonic_intervals = PENTATONIC_INTERVALS
-        self.octave_bases = OCTAVE_BASES
         
         # 定义过渡音和装饰音的重要性
         self.transition_notes = {

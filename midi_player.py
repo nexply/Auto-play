@@ -14,6 +14,7 @@ from sound_manager import SoundManager
 from note_range_optimizer import NoteRangeOptimizer
 from typing import Optional, Tuple
 from key_sender import KeySender
+from key_sequence import KeySequence, KeyEvent
 
 def is_admin():
     """检查是否具有管理员权限"""
@@ -90,6 +91,9 @@ class MidiPlayer:
         # 添加按键发送器
         self.key_sender = KeySender()
         self.use_message_mode = False  # 是否使用消息发送模式
+        
+        self.key_sequence = KeySequence()
+        self.recording = False
     def _analyze_tracks(self, mid):
         """分析MIDI文件的音轨信息（内部方法）"""
         tracks_info = []
@@ -204,6 +208,11 @@ class MidiPlayer:
                         keyboard.release(base_key)
                     else:
                         keyboard.press(key)
+                    
+                # 记录按键事件
+                if self.recording:
+                    self.key_sequence.add_event(key, True)
+                    
                 self._pressed_keys.add(key)
         except Exception as e:
             print(f"按键处理出错 {key}: {str(e)}")
@@ -225,6 +234,11 @@ class MidiPlayer:
                         keyboard.release(key.split('+')[1])
                     else:
                         keyboard.release(key)
+                    
+                # 记录释放事件
+                if self.recording:
+                    self.key_sequence.add_event(key, False)
+                    
                 self._pressed_keys.remove(key)
         except Exception as e:
             print(f"释放按键出错 {key}: {str(e)}")
@@ -456,7 +470,7 @@ class MidiPlayer:
                     elif self.pause_time > 0:
                         self.total_pause_time += time.time() * 1000 - self.pause_time
                         self.pause_time = 0
-                
+                    
                     # 更新预览模式状态
                     preview_mode = self.preview_mode
                     preview_original = self.preview_original
@@ -649,6 +663,52 @@ class MidiPlayer:
         except Exception as e:
             print(f"检查活动窗口时出错: {str(e)}")
             return False 
+
+    def start_recording(self):
+        """开始记录按键序列"""
+        self.recording = True
+        self.key_sequence.start_recording()
+    
+    def stop_recording(self):
+        """停止记录按键序列"""
+        self.recording = False
+        self.key_sequence.stop_recording()
+    
+    def save_sequence(self, filepath: str):
+        """保存按键序列"""
+        self.key_sequence.save_to_file(filepath)
+    
+    def load_sequence(self, filepath: str):
+        """加载并播放按键序列"""
+        sequence = KeySequence.load_from_file(filepath)
+        self.play_sequence(sequence)
+    
+    def play_sequence(self, sequence: KeySequence):
+        """播放按键序列"""
+        if not sequence.events:
+            return
+            
+        self.playing = True
+        start_time = time.time()
+        
+        try:
+            for event in sequence.events:
+                # 等待直到事件时间
+                while time.time() - start_time < event.time:
+                    if not self.playing:
+                        return
+                    time.sleep(0.001)
+                
+                # 执行按键事件
+                if event.press:
+                    self._press_key(event.key)
+                else:
+                    self._release_key(event.key)
+                    
+        except Exception as e:
+            print(f"播放序列时出错: {str(e)}")
+        finally:
+            self.playing = False
 
     def __del__(self):
         """析构函数：清理资源"""

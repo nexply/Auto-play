@@ -5,7 +5,8 @@ from midi_player import MidiPlayer
 import json
 import time
 import keyboard
-from keyboard_mapping import CONTROL_KEYS
+from keyboard_mapping import CONTROL_KEYS, PLAY_MODES
+from note_range_optimizer import NoteRangeOptimizer
 
 CONFIG_FILE = "config.json"
 
@@ -222,6 +223,32 @@ class MainWindow:
         # 重置按钮放在最后
         ttk.Button(params_frame, text="重置为默认值",
                    command=self.reset_optimization_params).pack(pady=5)
+        
+        # 添加模式切换
+        mode_frame = ttk.LabelFrame(right_frame, text="演奏模式")
+        mode_frame.pack(fill=tk.X, pady=5, padx=5)
+        
+        self.play_mode = tk.StringVar(value='21key')
+        for mode_key, mode_info in PLAY_MODES.items():
+            ttk.Radiobutton(mode_frame, text=mode_info['name'],
+                           variable=self.play_mode,
+                           value=mode_key,
+                           command=self.change_play_mode).pack(side=tk.LEFT, padx=5)
+        
+        # 添加序列控制按钮
+        sequence_frame = ttk.LabelFrame(right_frame, text="按键序列")
+        sequence_frame.pack(fill=tk.X, pady=5, padx=5)
+        
+        ttk.Button(sequence_frame, text="开始记录",
+                   command=self.start_recording).pack(side=tk.LEFT, padx=2)
+        ttk.Button(sequence_frame, text="停止记录",
+                   command=self.stop_recording).pack(side=tk.LEFT, padx=2)
+        ttk.Button(sequence_frame, text="保存序列",
+                   command=self.save_sequence).pack(side=tk.LEFT, padx=2)
+        ttk.Button(sequence_frame, text="加载序列",
+                   command=self.load_sequence).pack(side=tk.LEFT, padx=2)
+        ttk.Button(sequence_frame, text="查看序列",
+                   command=self.view_sequence).pack(side=tk.LEFT, padx=2)
 
     def load_config(self):
         """加载配置文件"""
@@ -846,5 +873,68 @@ class MainWindow:
                 
         except Exception as e:
             print(f"删除预设时出错: {str(e)}")
+        
+    def change_play_mode(self):
+        """切换演奏模式"""
+        try:
+            new_mode = self.play_mode.get()
+            # 更新优化器的模式
+            self.midi_player.note_optimizer = NoteRangeOptimizer(mode=new_mode)
+            
+            # 如果当前有歌曲，重新分析
+            if self.current_index >= 0:
+                self.reanalyze_current_song()
+                
+            # 更新预设（如果需要）
+            if hasattr(self, 'preset_manager'):
+                song_name = os.path.basename(self.midi_files[self.current_index])
+                preset = self.preset_manager.load_preset(f"{song_name}_{new_mode}")
+                if preset:
+                    self.apply_preset(preset)
+                
+        except Exception as e:
+            print(f"切换演奏模式时出错: {str(e)}")
+        
+    def start_recording(self):
+        """开始记录按键序列"""
+        self.midi_player.start_recording()
+        messagebox.showinfo("提示", "开始记录按键序列")
+
+    def stop_recording(self):
+        """停止记录按键序列"""
+        self.midi_player.stop_recording()
+        messagebox.showinfo("提示", "停止记录按键序列")
+
+    def save_sequence(self):
+        """保存按键序列"""
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".keyseq",
+            filetypes=[("按键序列文件", "*.keyseq")]
+        )
+        if filepath:
+            self.midi_player.save_sequence(filepath)
+            messagebox.showinfo("成功", "按键序列已保存")
+
+    def load_sequence(self):
+        """加载按键序列"""
+        filepath = filedialog.askopenfilename(
+            filetypes=[("按键序列文件", "*.keyseq")]
+        )
+        if filepath:
+            self.midi_player.load_sequence(filepath)
+
+    def view_sequence(self):
+        """查看当前序列"""
+        sequence_text = self.midi_player.key_sequence.get_formatted_sequence()
+        
+        # 创建查看窗口
+        view_window = tk.Toplevel(self.root)
+        view_window.title("按键序列")
+        view_window.geometry("400x600")
+        
+        text_widget = tk.Text(view_window, wrap=tk.WORD)
+        text_widget.pack(fill=tk.BOTH, expand=True)
+        text_widget.insert('1.0', sequence_text)
+        text_widget.config(state=tk.DISABLED)
         
     # ... [其他方法的实现与原QT版本类似，只需要调整UI相关的代码] 

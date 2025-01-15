@@ -29,6 +29,10 @@ class MainWindow:
         self.setup_ui()
         self.setup_keyboard_hooks()
         
+        # 如果有上次的目录，自动加载
+        if self.last_directory:
+            self.refresh_midi_files()
+        
         # 更新进度的定时器
         self.update_progress()
         
@@ -52,9 +56,16 @@ class MainWindow:
         stay_on_top_cb.pack(pady=5)
         
         # 选择文件夹按钮
-        select_btn = ttk.Button(left_frame, text="选择MIDI文件夹", 
+        button_frame = ttk.Frame(left_frame)
+        button_frame.pack(pady=5)
+        
+        select_btn = ttk.Button(button_frame, text="选择MIDI文件夹", 
                               command=self.select_directory)
-        select_btn.pack(pady=5)
+        select_btn.pack(side=tk.LEFT, padx=2)
+        
+        refresh_btn = ttk.Button(button_frame, text="刷新文件", 
+                               command=self.refresh_midi_files)
+        refresh_btn.pack(side=tk.LEFT, padx=2)
         
         # 搜索框
         self.search_var = tk.StringVar()
@@ -124,6 +135,75 @@ class MainWindow:
                  "方向键上 - 上一首\n"
                  "方向键下 - 下一首\n"
                  "ESC键 - 强制停止弹奏").pack(pady=10)
+        
+        # 添加参数调整面板
+        params_frame = ttk.LabelFrame(right_frame, text="音域优化参数")
+        params_frame.pack(fill=tk.X, pady=5, padx=5)
+        
+        # 权重调整滑块
+        self.weight_vars = {}
+        weights_frame = ttk.Frame(params_frame)
+        weights_frame.pack(fill=tk.X, pady=5)
+        
+        # 创建权重调整滑块
+        weight_names = {
+            'coverage': '音符覆盖率',
+            'density': '音符密度',
+            'melody': '旋律线条',
+            'transition': '音符跳转',
+            'pentatonic': '五声音阶',
+            'octave_balance': '八度平衡'
+        }
+        
+        for key, name in weight_names.items():
+            frame = ttk.Frame(weights_frame)
+            frame.pack(fill=tk.X, pady=2)
+            
+            ttk.Label(frame, text=f"{name}:").pack(side=tk.LEFT, padx=5)
+            self.weight_vars[key] = tk.DoubleVar(value=self.midi_player.note_optimizer.weights[key])
+            scale = ttk.Scale(frame, from_=0.0, to=1.0, 
+                             variable=self.weight_vars[key],
+                             command=lambda *args, k=key: self.update_weight(k))
+            scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+            
+            # 显示具体数值
+            value_label = ttk.Label(frame, width=4)
+            value_label.pack(side=tk.LEFT, padx=5)
+            self.weight_vars[key].trace('w', 
+                lambda *args, l=value_label, v=self.weight_vars[key]: 
+                l.configure(text=f"{v.get():.2f}"))
+        
+        # 八度权重调整
+        octaves_frame = ttk.LabelFrame(params_frame, text="八度区域权重")
+        octaves_frame.pack(fill=tk.X, pady=5)
+        
+        self.octave_vars = {}
+        octave_names = {
+            'low': '低音区',
+            'middle': '中音区',
+            'high': '高音区'
+        }
+        
+        for key, name in octave_names.items():
+            frame = ttk.Frame(octaves_frame)
+            frame.pack(fill=tk.X, pady=2)
+            
+            ttk.Label(frame, text=f"{name}:").pack(side=tk.LEFT, padx=5)
+            self.octave_vars[key] = tk.DoubleVar(value=0.33)  # 默认平均分配
+            scale = ttk.Scale(frame, from_=0.0, to=1.0,
+                             variable=self.octave_vars[key],
+                             command=lambda *args, k=key: self.update_octave_weight(k))
+            scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+            
+            value_label = ttk.Label(frame, width=4)
+            value_label.pack(side=tk.LEFT, padx=5)
+            self.octave_vars[key].trace('w',
+                lambda *args, l=value_label, v=self.octave_vars[key]:
+                l.configure(text=f"{v.get():.2f}"))
+        
+        # 添加重置按钮
+        ttk.Button(params_frame, text="重置为默认值",
+                   command=self.reset_optimization_params).pack(pady=5)
 
     def load_config(self):
         """加载配置文件"""
@@ -203,23 +283,9 @@ class MainWindow:
                 self.last_directory = dir_path
                 self.save_config()
                 
-                # 加载目录中的所有MIDI文件
-                self.midi_files = []
-                for root, _, files in os.walk(dir_path):
-                    for file in files:
-                        if file.lower().endswith(('.mid', '.midi')):
-                            self.midi_files.append(os.path.join(root, file))
+                # 刷新文件列表
+                self.refresh_midi_files()
                 
-                # 清空并更新歌曲列表
-                self.song_list.delete(0, tk.END)
-                for file in self.midi_files:
-                    self.song_list.insert(tk.END, os.path.basename(file))
-                
-                # 如果有文件，选中第一个
-                if self.midi_files:
-                    self.song_list.selection_set(0)
-                    self.current_index = 0
-                    self.enable_buttons()
         except Exception as e:
             print(f"选择文件夹时出错: {str(e)}")
             messagebox.showerror("错误", f"选择文件夹时出错: {str(e)}")
@@ -534,5 +600,126 @@ class MainWindow:
                 self.preview_adjusted_btn['text'] = "预览调整"
         except Exception as e:
             print(f"切换预览状态时出错: {str(e)}")
+        
+    def update_weight(self, key):
+        """更新权重参数"""
+        try:
+            value = self.weight_vars[key].get()
+            self.midi_player.note_optimizer.weights[key] = value
+            # 如果当前有选中的歌曲，重新计算优化
+            if self.current_index >= 0:
+                self.reanalyze_current_song()
+        except Exception as e:
+            print(f"更新权重参数时出错: {str(e)}")
+
+    def update_octave_weight(self, key):
+        """更新八度权重"""
+        try:
+            # 更新八度权重
+            weights = {k: v.get() for k, v in self.octave_vars.items()}
+            # 归一化权重
+            total = sum(weights.values())
+            if total > 0:
+                normalized_weights = {k: v/total for k, v in weights.items()}
+                self.midi_player.note_optimizer.octave_weights = normalized_weights
+                # 重新分析当前歌曲
+                if self.current_index >= 0:
+                    self.reanalyze_current_song()
+        except Exception as e:
+            print(f"更新八度权重时出错: {str(e)}")
+
+    def reset_optimization_params(self):
+        """重置优化参数为默认值"""
+        try:
+            # 重置权重
+            default_weights = {
+                'coverage': 0.3,
+                'density': 0.2,
+                'melody': 0.2,
+                'transition': 0.1,
+                'pentatonic': 0.1,
+                'octave_balance': 0.1
+            }
+            
+            # 更新UI和优化器
+            for key, value in default_weights.items():
+                self.weight_vars[key].set(value)
+                self.midi_player.note_optimizer.weights[key] = value
+            
+            # 重置八度权重
+            default_octave_weights = {'low': 0.3, 'middle': 0.4, 'high': 0.3}
+            for key, value in default_octave_weights.items():
+                self.octave_vars[key].set(value)
+            
+            self.midi_player.note_optimizer.octave_weights = default_octave_weights
+            
+            # 重新分析当前歌曲
+            if self.current_index >= 0:
+                self.reanalyze_current_song()
+        except Exception as e:
+            print(f"重置优化参数时出错: {str(e)}")
+
+    def reanalyze_current_song(self):
+        """重新分析当前歌曲"""
+        try:
+            if self.current_index >= 0:
+                # 停止当前播放
+                was_playing = self.midi_player.playing
+                if was_playing:
+                    self.stop_playback()
+                
+                # 重新加载和分析MIDI文件
+                mid = mido.MidiFile(self.midi_files[self.current_index])
+                self.midi_player.analyze_tracks(mid)
+                
+                # 如果之前在播放，则重新开始播放
+                if was_playing:
+                    self.start_playback()
+        except Exception as e:
+            print(f"重新分析歌曲时出错: {str(e)}")
+        
+    def refresh_midi_files(self):
+        """刷新MIDI文件列表"""
+        try:
+            if not self.last_directory:
+                return
+            
+            # 保存当前选中的文件名（如果有）
+            current_file = None
+            if self.current_index >= 0 and self.current_index < len(self.midi_files):
+                current_file = os.path.basename(self.midi_files[self.current_index])
+            
+            # 重新加载目录中的所有MIDI文件
+            self.midi_files = []
+            for root, _, files in os.walk(self.last_directory):
+                for file in files:
+                    if file.lower().endswith(('.mid', '.midi')):
+                        self.midi_files.append(os.path.join(root, file))
+            
+            # 清空并更新歌曲列表
+            self.song_list.delete(0, tk.END)
+            for file in self.midi_files:
+                self.song_list.insert(tk.END, os.path.basename(file))
+            
+            # 尝试恢复之前选中的文件
+            if current_file:
+                for i, file in enumerate(self.midi_files):
+                    if os.path.basename(file) == current_file:
+                        self.song_list.selection_set(i)
+                        self.song_list.see(i)
+                        self.current_index = i
+                        break
+            # 如果没有找到之前的文件但列表不为空，选中第一个
+            elif self.midi_files:
+                self.song_list.selection_set(0)
+                self.current_index = 0
+            
+            if self.midi_files:
+                self.enable_buttons()
+            else:
+                self.disable_buttons()
+            
+        except Exception as e:
+            print(f"刷新MIDI文件列表时出错: {str(e)}")
         
     # ... [其他方法的实现与原QT版本类似，只需要调整UI相关的代码] 

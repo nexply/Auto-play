@@ -5,8 +5,10 @@ from midi_player import MidiPlayer
 import json
 import time
 import keyboard
+import mido
 from keyboard_mapping import CONTROL_KEYS, PLAY_MODES
 from note_range_optimizer import NoteRangeOptimizer
+from preset_manager import PresetManager
 
 CONFIG_FILE = "config.json"
 
@@ -22,6 +24,9 @@ class MainWindow:
         self.current_index = -1
         self.last_key_time = 0
         self.key_cooldown = 0.2
+        
+        # 初始化预设管理器
+        self.preset_manager = PresetManager()
         
         # 加载配置
         self.config = self.load_config()
@@ -45,9 +50,13 @@ class MainWindow:
         main_frame = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # 左侧面板
+        # 左侧面板 - 歌曲列表
         left_frame = ttk.Frame(main_frame)
         main_frame.add(left_frame)
+        
+        # 右侧面板
+        right_frame = ttk.Frame(main_frame)
+        main_frame.add(right_frame)
         
         # 置顶复选框
         self.stay_on_top_var = tk.BooleanVar(value=self.config.get('stay_on_top', False))
@@ -74,27 +83,36 @@ class MainWindow:
         search_entry = ttk.Entry(left_frame, textvariable=self.search_var)
         search_entry.pack(pady=5, fill=tk.X)
         
-        # 歌曲列表
-        self.song_list = tk.Listbox(left_frame)
-        self.song_list.pack(fill=tk.BOTH, expand=True, pady=5)
-        self.song_list.bind('<<ListboxSelect>>', self.song_selected)
+        # MIDI文件列表框架
+        midi_frame = ttk.LabelFrame(left_frame, text="MIDI文件")
+        midi_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # 右侧面板
-        right_frame = ttk.Frame(main_frame)
-        main_frame.add(right_frame)
+        self.midi_listbox = tk.Listbox(midi_frame)
+        self.midi_listbox.pack(fill=tk.BOTH, expand=True)
+        self.midi_listbox.bind('<<ListboxSelect>>', self.select_midi_file)
+        
+        # 右侧面板 - 使用Notebook
+        notebook = ttk.Notebook(right_frame)
+        notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # 基本控制标签页
+        basic_tab = ttk.Frame(notebook)
+        notebook.add(basic_tab, text="基本控制")
         
         # 音轨选择
-        ttk.Label(right_frame, text="选择音轨:").pack(pady=5)
-        self.tracks_list = tk.Listbox(right_frame)
-        self.tracks_list.pack(fill=tk.BOTH, expand=True, pady=5)
-        self.tracks_list.bind('<<ListboxSelect>>', self.track_selected)
+        tracks_frame = ttk.LabelFrame(basic_tab, text="选择音轨")
+        tracks_frame.pack(fill=tk.X, pady=5, padx=5)
+        
+        self.tracks_listbox = tk.Listbox(tracks_frame, height=8)
+        self.tracks_listbox.pack(fill=tk.X, expand=True)
+        self.tracks_listbox.bind('<<ListboxSelect>>', self.select_track)
         
         # 时间显示
-        self.time_label = ttk.Label(right_frame, text="剩余时间: 00:00")
+        self.time_label = ttk.Label(basic_tab, text="剩余时间: 00:00")
         self.time_label.pack(pady=5)
         
         # 控制按钮
-        control_frame = ttk.Frame(right_frame)
+        control_frame = ttk.Frame(basic_tab)
         control_frame.pack(pady=5)
         
         self.play_btn = ttk.Button(control_frame, text="播放", 
@@ -109,9 +127,20 @@ class MainWindow:
                                  command=self.stop_playback, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, padx=5)
         
-        # 预览控制按钮
-        preview_frame = ttk.Frame(control_frame)
-        preview_frame.pack(side=tk.LEFT, padx=5)
+        # 模式切换
+        mode_frame = ttk.LabelFrame(basic_tab, text="演奏模式")
+        mode_frame.pack(fill=tk.X, pady=5, padx=5)
+        
+        self.play_mode = tk.StringVar(value='21key')
+        for mode_key, mode_info in PLAY_MODES.items():
+            ttk.Radiobutton(mode_frame, text=mode_info['name'],
+                           variable=self.play_mode,
+                           value=mode_key,
+                           command=self.change_play_mode).pack(side=tk.LEFT, padx=5)
+        
+        # 预览控制
+        preview_frame = ttk.LabelFrame(basic_tab, text="预览控制")
+        preview_frame.pack(fill=tk.X, pady=5, padx=5)
         
         self.preview_original_btn = ttk.Button(preview_frame, text="预览原始", 
                                              command=lambda: self.toggle_preview(True),
@@ -123,30 +152,13 @@ class MainWindow:
                                              state=tk.DISABLED)
         self.preview_adjusted_btn.pack(side=tk.LEFT, padx=2)
         
-        # 在控制按钮区域添加模式切换
-        self.message_mode_var = tk.BooleanVar(value=False)
-        mode_cb = ttk.Checkbutton(control_frame, text="使用消息模式", 
-                                 variable=self.message_mode_var,
-                                 command=self.toggle_message_mode)
-        mode_cb.pack(side=tk.LEFT, padx=5)
+        # 参数调整标签页
+        params_tab = ttk.Frame(notebook)
+        notebook.add(params_tab, text="参数调整")
         
-        # 使用说明
-        ttk.Label(right_frame, text="使用说明：\n"
-                 "1. 使用管理员权限启动\n"
-                 "2. 选择MIDI文件\n"
-                 "3. 选择要播放的音轨\n"
-                 "4. 点击播放按钮开始演奏").pack(pady=10)
-                 
-        ttk.Label(right_frame, text="快捷键说明：\n"
-                 "减号键(-) - 播放/暂停\n"
-                 "等号键(=) - 停止播放\n"
-                 "方向键上 - 上一首\n"
-                 "方向键下 - 下一首\n"
-                 "ESC键 - 强制停止弹奏").pack(pady=10)
-        
-        # 添加参数调整面板
-        params_frame = ttk.LabelFrame(right_frame, text="音域优化参数")
-        params_frame.pack(fill=tk.X, pady=5, padx=5)
+        # 参数调整控件
+        params_frame = ttk.LabelFrame(params_tab, text="音域优化参数")
+        params_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # 权重调整滑块
         self.weight_vars = {}
@@ -224,31 +236,44 @@ class MainWindow:
         ttk.Button(params_frame, text="重置为默认值",
                    command=self.reset_optimization_params).pack(pady=5)
         
-        # 添加模式切换
-        mode_frame = ttk.LabelFrame(right_frame, text="演奏模式")
-        mode_frame.pack(fill=tk.X, pady=5, padx=5)
+        # 序列控制标签页
+        sequence_tab = ttk.Frame(notebook)
+        notebook.add(sequence_tab, text="序列控制")
         
-        self.play_mode = tk.StringVar(value='21key')
-        for mode_key, mode_info in PLAY_MODES.items():
-            ttk.Radiobutton(mode_frame, text=mode_info['name'],
-                           variable=self.play_mode,
-                           value=mode_key,
-                           command=self.change_play_mode).pack(side=tk.LEFT, padx=5)
-        
-        # 添加序列控制按钮
-        sequence_frame = ttk.LabelFrame(right_frame, text="按键序列")
+        # 序列控制按钮
+        sequence_frame = ttk.Frame(sequence_tab)
         sequence_frame.pack(fill=tk.X, pady=5, padx=5)
         
-        ttk.Button(sequence_frame, text="开始记录",
-                   command=self.start_recording).pack(side=tk.LEFT, padx=2)
-        ttk.Button(sequence_frame, text="停止记录",
-                   command=self.stop_recording).pack(side=tk.LEFT, padx=2)
-        ttk.Button(sequence_frame, text="保存序列",
-                   command=self.save_sequence).pack(side=tk.LEFT, padx=2)
+        # MIDI转换相关按钮
+        ttk.Label(sequence_frame, text="MIDI序列转换:").pack(fill=tk.X, pady=2)
+        ttk.Button(sequence_frame, text="转换当前MIDI为序列",
+                   command=self.convert_to_sequence).pack(fill=tk.X, pady=2)
+        
+        # 分隔线
+        ttk.Separator(sequence_frame, orient='horizontal').pack(fill=tk.X, pady=5)
+        
+        # 序列操作按钮
+        ttk.Label(sequence_frame, text="序列操作:").pack(fill=tk.X, pady=2)
         ttk.Button(sequence_frame, text="加载序列",
-                   command=self.load_sequence).pack(side=tk.LEFT, padx=2)
-        ttk.Button(sequence_frame, text="查看序列",
-                   command=self.view_sequence).pack(side=tk.LEFT, padx=2)
+                   command=self.load_sequence).pack(fill=tk.X, pady=2)
+        ttk.Button(sequence_frame, text="播放序列",
+                   command=self.play_sequence).pack(fill=tk.X, pady=2)
+        ttk.Button(sequence_frame, text="停止序列",
+                   command=self.stop_sequence).pack(fill=tk.X, pady=2)
+        ttk.Button(sequence_frame, text="查看序列内容",
+                   command=self.view_sequence).pack(fill=tk.X, pady=2)
+        
+        # 分隔线
+        ttk.Separator(sequence_frame, orient='horizontal').pack(fill=tk.X, pady=5)
+        
+        # 录制相关按钮（如果还需要的话）
+        ttk.Label(sequence_frame, text="实时录制:").pack(fill=tk.X, pady=2)
+        ttk.Button(sequence_frame, text="开始录制",
+                   command=self.start_recording).pack(fill=tk.X, pady=2)
+        ttk.Button(sequence_frame, text="停止录制",
+                   command=self.stop_recording).pack(fill=tk.X, pady=2)
+        ttk.Button(sequence_frame, text="保存录制序列",
+                   command=self.save_sequence).pack(fill=tk.X, pady=2)
 
     def load_config(self):
         """加载配置文件"""
@@ -568,27 +593,27 @@ class MainWindow:
         """根据搜索文本过滤歌曲列表"""
         try:
             search_text = self.search_var.get().lower()
-            self.song_list.delete(0, tk.END)
+            self.midi_listbox.delete(0, tk.END)
             
             if not search_text:
                 # 如果搜索框为空，显示所有歌曲
                 for file in self.midi_files:
-                    self.song_list.insert(tk.END, os.path.basename(file))
+                    self.midi_listbox.insert(tk.END, os.path.basename(file))
             else:
                 # 否则显示匹配的歌曲
                 for file in self.midi_files:
                     filename = os.path.basename(file).lower()
                     if search_text in filename:
-                        self.song_list.insert(tk.END, os.path.basename(file))
+                        self.midi_listbox.insert(tk.END, os.path.basename(file))
             
             # 如果之前有选中的歌曲，尝试重新选中
             if self.current_index >= 0 and self.current_index < len(self.midi_files):
                 current_file = os.path.basename(self.midi_files[self.current_index])
                 # 查找当前歌曲在过滤后列表中的位置
-                for i in range(self.song_list.size()):
-                    if self.song_list.get(i) == current_file:
-                        self.song_list.selection_set(i)
-                        self.song_list.see(i)
+                for i in range(self.midi_listbox.size()):
+                    if self.midi_listbox.get(i) == current_file:
+                        self.midi_listbox.selection_set(i)
+                        self.midi_listbox.see(i)
                         break
         except Exception as e:
             print(f"过滤歌曲时出错: {str(e)}")
@@ -645,21 +670,35 @@ class MainWindow:
     def toggle_preview(self, is_original=False):
         """切换预览播放状态"""
         try:
-            if not self.midi_player.playing:
-                if self.current_index >= 0:
-                    # 开始预览播放
-                    btn = self.preview_original_btn if is_original else self.preview_adjusted_btn
-                    btn['text'] = "停止预览"
-                    self.midi_player.play_file(self.midi_files[self.current_index], 
-                                             preview_mode=True,
-                                             preview_original=is_original)
-            else:
-                # 停止预览
+            # 如果正在播放，停止预览
+            if self.midi_player.playing:
                 self.stop_playback()
                 self.preview_original_btn['text'] = "预览原始"
                 self.preview_adjusted_btn['text'] = "预览调整"
+                return
+            
+            # 开始预览播放
+            if self.current_index >= 0:
+                btn = self.preview_original_btn if is_original else self.preview_adjusted_btn
+                
+                # 只更新当前按钮的状态
+                btn['text'] = "停止预览"
+                
+                # 开始播放
+                midi_file = self.midi_files[self.current_index]
+                if self.midi_player.play_file(midi_file, preview_mode=True, preview_original=is_original):
+                    print(f"开始预览播放: {'原始' if is_original else '调整后'}")
+                else:
+                    print("预览播放失败")
+                    btn['text'] = "预览原始" if is_original else "预览调整"
+            else:
+                messagebox.showinfo("提示", "请先选择一首歌曲")
+            
         except Exception as e:
             print(f"切换预览状态时出错: {str(e)}")
+            # 恢复按钮状态
+            self.preview_original_btn['text'] = "预览原始"
+            self.preview_adjusted_btn['text'] = "预览调整"
         
     def update_weight(self, key):
         """更新权重参数"""
@@ -756,22 +795,22 @@ class MainWindow:
                     if file.lower().endswith(('.mid', '.midi')):
                         self.midi_files.append(os.path.join(root, file))
             
-            # 清空并更新歌曲列表
-            self.song_list.delete(0, tk.END)
+            # 清空并更新MIDI文件列表
+            self.midi_listbox.delete(0, tk.END)
             for file in self.midi_files:
-                self.song_list.insert(tk.END, os.path.basename(file))
+                self.midi_listbox.insert(tk.END, os.path.basename(file))
             
             # 尝试恢复之前选中的文件
             if current_file:
                 for i, file in enumerate(self.midi_files):
                     if os.path.basename(file) == current_file:
-                        self.song_list.selection_set(i)
-                        self.song_list.see(i)
+                        self.midi_listbox.selection_set(i)
+                        self.midi_listbox.see(i)
                         self.current_index = i
                         break
             # 如果没有找到之前的文件但列表不为空，选中第一个
             elif self.midi_files:
-                self.song_list.selection_set(0)
+                self.midi_listbox.selection_set(0)
                 self.current_index = 0
             
             if self.midi_files:
@@ -878,8 +917,8 @@ class MainWindow:
         """切换演奏模式"""
         try:
             new_mode = self.play_mode.get()
-            # 更新优化器的模式
-            self.midi_player.note_optimizer = NoteRangeOptimizer(mode=new_mode)
+            # 更新播放器的模式
+            self.midi_player.set_play_mode(new_mode)
             
             # 如果当前有歌曲，重新分析
             if self.current_index >= 0:
@@ -917,24 +956,196 @@ class MainWindow:
 
     def load_sequence(self):
         """加载按键序列"""
-        filepath = filedialog.askopenfilename(
-            filetypes=[("按键序列文件", "*.keyseq")]
-        )
-        if filepath:
-            self.midi_player.load_sequence(filepath)
+        try:
+            filepath = filedialog.askopenfilename(
+                filetypes=[("按键序列文件", "*.keyseq")]
+            )
+            if filepath:
+                if self.midi_player.load_sequence(filepath):
+                    messagebox.showinfo("成功", "序列加载成功")
+                else:
+                    messagebox.showerror("错误", "加载序列失败")
+                
+        except Exception as e:
+            print(f"加载序列时出错: {str(e)}")
 
     def view_sequence(self):
         """查看当前序列"""
-        sequence_text = self.midi_player.key_sequence.get_formatted_sequence()
+        try:
+            if not hasattr(self.midi_player, 'current_sequence'):
+                messagebox.showinfo("提示", "没有加载的序列")
+                return
+            
+            sequence_text = self.midi_player.current_sequence.get_formatted_sequence()
+            
+            # 创建查看窗口
+            view_window = tk.Toplevel(self.root)
+            view_window.title("按键序列")
+            view_window.geometry("400x600")
+            
+            # 添加滚动条
+            scrollbar = ttk.Scrollbar(view_window)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            text_widget = tk.Text(view_window, wrap=tk.WORD, yscrollcommand=scrollbar.set)
+            text_widget.pack(fill=tk.BOTH, expand=True)
+            
+            scrollbar.config(command=text_widget.yview)
+            
+            text_widget.insert('1.0', sequence_text)
+            text_widget.config(state=tk.DISABLED)
+            
+        except Exception as e:
+            print(f"查看序列内容时出错: {str(e)}")
+            messagebox.showerror("错误", "查看序列内容时出错")
+
+    def convert_to_sequence(self):
+        """将当前MIDI文件转换为按键序列"""
+        try:
+            if self.current_index < 0:
+                messagebox.showwarning("提示", "请先选择一首歌曲")
+                return
+            
+            midi_file = self.midi_files[self.current_index]
+            output_file = filedialog.asksaveasfilename(
+                defaultextension=".keyseq",
+                filetypes=[("按键序列文件", "*.keyseq")],
+                initialfile=os.path.splitext(os.path.basename(midi_file))[0] + ".keyseq"
+            )
+            
+            if output_file:
+                if self.midi_player.convert_and_save_sequence(midi_file, output_file):
+                    messagebox.showinfo("成功", "已将MIDI文件转换为按键序列")
+                else:
+                    messagebox.showerror("错误", "转换序列失败")
+                
+        except Exception as e:
+            print(f"转换序列时出错: {str(e)}")
         
-        # 创建查看窗口
-        view_window = tk.Toplevel(self.root)
-        view_window.title("按键序列")
-        view_window.geometry("400x600")
+    def play_sequence(self):
+        """播放已加载的序列"""
+        try:
+            if self.midi_player.play_loaded_sequence():
+                messagebox.showinfo("成功", "开始播放序列")
+            else:
+                messagebox.showwarning("提示", "没有可播放的序列")
+        except Exception as e:
+            print(f"播放序列时出错: {str(e)}")
+
+    def stop_sequence(self):
+        """停止序列播放"""
+        try:
+            self.midi_player.stop_sequence()
+            messagebox.showinfo("提示", "已停止序列播放")
+        except Exception as e:
+            print(f"停止序列播放时出错: {str(e)}")
         
-        text_widget = tk.Text(view_window, wrap=tk.WORD)
-        text_widget.pack(fill=tk.BOTH, expand=True)
-        text_widget.insert('1.0', sequence_text)
-        text_widget.config(state=tk.DISABLED)
+    def select_midi_file(self, event):
+        """选择MIDI文件"""
+        try:
+            # 获取选中的文件索引
+            selection = self.midi_listbox.curselection()
+            if not selection:
+                return
+            
+            index = selection[0]
+            if index != self.current_index:
+                self.current_index = index
+                
+                # 更新当前文件
+                midi_file = self.midi_files[index]
+                print(f"选择MIDI文件: {midi_file}")
+                
+                # 分析并更新音轨信息
+                self.update_tracks_info()
+                
+                # 更新预设（如果有）
+                self.load_preset_for_current_song()
+                
+        except Exception as e:
+            print(f"选择MIDI文件时出错: {str(e)}")
+
+    def update_tracks_info(self):
+        """更新音轨信息"""
+        try:
+            if self.current_index < 0:
+                return
+            
+            # 清空当前音轨列表
+            self.tracks_listbox.delete(0, tk.END)
+            
+            # 分析MIDI文件的音轨
+            midi_file = self.midi_files[self.current_index]
+            tracks_info = self.midi_player.analyze_tracks(mido.MidiFile(midi_file))
+            
+            # 更新音轨列表
+            for track in tracks_info:
+                track_name = track['name']
+                notes_count = track['notes_count']
+                note_range = track['note_range']
+                display_text = f"{track_name} ({notes_count}音符)"
+                self.tracks_listbox.insert(tk.END, display_text)
+                
+            # 默认选择第一个音轨（所有音轨）
+            if self.tracks_listbox.size() > 0:
+                self.tracks_listbox.selection_set(0)
+                self.select_track(None)  # 触发音轨选择事件
+                
+        except Exception as e:
+            print(f"更新音轨信息时出错: {str(e)}")
+
+    def select_track(self, event):
+        """处理音轨选择"""
+        try:
+            selection = self.tracks_listbox.curselection()
+            if not selection:
+                return
+            
+            current_row = selection[0]
+            
+            # 检查是否选择了"全部音轨"
+            if current_row == 0:
+                self.midi_player.selected_track = None
+            else:
+                # 设置选中的音轨（索引需要减1，因为第一项是"全部音轨"）
+                if current_row - 1 < len(self.midi_player.tracks_info):
+                    track_info = self.midi_player.tracks_info[current_row - 1]
+                    self.midi_player.selected_track = track_info['index']
+            
+            # 如果正在播放，重新开始播放选中的音轨
+            if self.midi_player.playing:
+                self.stop_playback()
+                self.start_playback()
+            
+        except Exception as e:
+            print(f"选择音轨时出错: {str(e)}")
+
+    def load_preset_for_current_song(self):
+        """加载当前歌曲的预设"""
+        try:
+            if self.current_index < 0:
+                return
+            
+            song_name = os.path.basename(self.midi_files[self.current_index])
+            preset = self.preset_manager.load_preset(song_name)
+            
+            if preset:
+                # 更新权重
+                for key, value in preset['weights'].items():
+                    self.weight_vars[key].set(value)
+                    self.midi_player.note_optimizer.weights[key] = value
+                
+                # 更新八度权重
+                for key, value in preset['octave_weights'].items():
+                    self.octave_vars[key].set(value)
+                
+                # 应用新的参数
+                self.reanalyze_current_song()
+                messagebox.showinfo("成功", f"已加载预设: {song_name}")
+            else:
+                messagebox.showinfo("提示", "未找到该歌曲的预设")
+                
+        except Exception as e:
+            print(f"加载预设时出错: {str(e)}")
         
     # ... [其他方法的实现与原QT版本类似，只需要调整UI相关的代码] 

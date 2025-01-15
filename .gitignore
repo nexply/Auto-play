@@ -35,3 +35,4 @@ dist/
 # 项目特定
 config.json
 *.log 
+*.json

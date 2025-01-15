@@ -52,3 +52,4 @@ class PresetManager:
         except Exception as e:
             print(f"删除预设时出错: {str(e)}")
             return False 
+#触发更新

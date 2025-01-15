@@ -323,3 +323,4 @@ class NoteRangeOptimizer:
                 balance_score += weight * octave_score
         
         return balance_score
+#触发更新

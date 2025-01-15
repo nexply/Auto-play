@@ -76,3 +76,4 @@ class SoundManager:
             channel.stop()
         self.active_channels_original.clear()
         self.active_channels_adjusted.clear() 
+#触发更新

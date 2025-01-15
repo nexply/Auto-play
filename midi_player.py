@@ -85,17 +85,35 @@ class MidiPlayer:
         pygame.init()
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=1024)
 
+        self.use_36key_mode = False  # 默认使用21键模式
+        self.current_mode = '21key'  # 默认模式
+        
+        # 获取当前模式的配置
+        mode_config = PLAY_MODES[self.current_mode]
+        self.note_to_key = mode_config['note_to_key']
+        self.playable_min = mode_config['playable_min']
+        self.playable_max = mode_config['playable_max']
+
     def set_mode(self, mode: str):
         """设置演奏模式"""
         if mode not in PLAY_MODES:
-            raise ValueError(f"不支持的模式: {mode}")
+            return
             
         self.current_mode = mode
+        self.use_36key_mode = (mode == '36key')
+        
+        # 更新模式相关配置
         mode_config = PLAY_MODES[mode]
+        # 直接使用原始的按键映射，不做转换
+        self.note_to_key = {note: key for key, info in mode_config['notes'].items() 
+                           for note in [info['note']]}
         self.playable_min = mode_config['playable_min']
         self.playable_max = mode_config['playable_max']
-        self.note_to_key = mode_config['note_to_key']
-        print(f"已切换到{mode_config['name']}")
+        
+        # 更新优化器的模式
+        self.note_optimizer = NoteRangeOptimizer(mode=mode)
+        
+        print(f"切换到{mode_config['name']}")
 
     def _analyze_tracks(self, mid):
         """分析MIDI文件的音轨信息（内部方法）"""
@@ -206,9 +224,9 @@ class MidiPlayer:
             with self._lock:
                 if not self.playing:
                     return 0
-                if self.paused:
-                    return self.pause_time - self.start_time - self.total_pause_time
-                return time.time() - self.start_time - self.total_pause_time
+                    if self.paused:
+                        return self.pause_time - self.start_time - self.total_pause_time
+                    return time.time() - self.start_time - self.total_pause_time
         except Exception as e:
             print(f"获取当前时间时出错: {str(e)}")
             return 0
@@ -254,14 +272,7 @@ class MidiPlayer:
                 if self.use_message_mode:
                     if not self.key_sender:
                         self.key_sender = KeySender()
-                    # 处理组合键
-                    if '+' in key:
-                        parts = key.split('+')
-                        # 对于shift+和ctrl+的组合键，需要分别发送
-                        for part in parts:
-                            self.key_sender.send_key(part, True)
-                    else:
-                        self.key_sender.send_key(key, True)
+                    self.key_sender.send_key(key, True)
                 else:
                     # 处理组合键
                     if '+' in key:
@@ -285,14 +296,7 @@ class MidiPlayer:
             if key in self._pressed_keys:
                 if self.use_message_mode:
                     if self.key_sender:
-                        # 处理组合键
-                        if '+' in key:
-                            parts = key.split('+')
-                            # 按相反顺序释放按键
-                            for part in reversed(parts):
-                                self.key_sender.send_key(part, False)
-                        else:
-                            self.key_sender.send_key(key, False)
+                        self.key_sender.send_key(key, False)
                 else:
                     # 处理组合键
                     if '+' in key:
@@ -309,6 +313,7 @@ class MidiPlayer:
                 print(f"释放按键: {key}")
         except Exception as e:
             print(f"释放按键出错 {key}: {str(e)}")
+
 
     def _release_all_keys(self):
         """释放所有按下的键"""
@@ -466,9 +471,10 @@ class MidiPlayer:
             self.preview_mode = preview_mode
             
             # 获取当前模式的配置
-            mode = '36key' if self.use_36key_mode else '21key'
-            mode_config = PLAY_MODES[mode]
-            self.note_to_key = mode_config['note_to_key']
+            mode_config = PLAY_MODES[self.current_mode]
+            # 直接使用原始的按键映射，不做转换
+            self.note_to_key = {note: key for key, info in mode_config['notes'].items() 
+                               for note in [info['note']]}
             self.playable_min = mode_config['playable_min']
             self.playable_max = mode_config['playable_max']
             
@@ -532,7 +538,7 @@ class MidiPlayer:
             self.play_thread.daemon = True
             self.play_thread.start()
             return True
-            
+                
         except Exception as e:
             print(f"播放MIDI文件时出错: {str(e)}")
             return False 
@@ -568,8 +574,8 @@ class MidiPlayer:
                     if self.paused:
                         if self.pause_time == 0:
                             self.pause_time = time.time() * 1000
-                            time.sleep(0.1)
-                            continue
+                        time.sleep(0.1)
+                        continue
                     elif self.pause_time > 0:
                         self.total_pause_time += time.time() * 1000 - self.pause_time
                         self.pause_time = 0
@@ -918,9 +924,19 @@ class MidiPlayer:
         Args:
             mode: '21key' 或 '36key'
         """
+        if mode not in PLAY_MODES:
+            return
+            
+        self.current_mode = mode
         self.use_36key_mode = (mode == '36key')
-        # 更新优化器的模式
-        self.note_optimizer = NoteRangeOptimizer(mode=mode) 
+        
+        # 更新模式相关配置
+        mode_config = PLAY_MODES[mode]
+        self.note_to_key = mode_config['note_to_key']
+        self.playable_min = mode_config['playable_min']
+        self.playable_max = mode_config['playable_max']
+        
+        print(f"切换到{mode_config['name']}")
 
     def set_speed(self, speed: float):
         """设置播放速度"""
@@ -1255,9 +1271,10 @@ class MidiPlayer:
             self.preview_mode = preview_mode
             
             # 获取当前模式的配置
-            mode = '36key' if self.use_36key_mode else '21key'
-            mode_config = PLAY_MODES[mode]
-            self.note_to_key = mode_config['note_to_key']
+            mode_config = PLAY_MODES[self.current_mode]
+            # 直接使用原始的按键映射，不做转换
+            self.note_to_key = {note: key for key, info in mode_config['notes'].items() 
+                               for note in [info['note']]}
             self.playable_min = mode_config['playable_min']
             self.playable_max = mode_config['playable_max']
             

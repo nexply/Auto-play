@@ -151,7 +151,8 @@ PLAY_MODES = {
     '36key': {
         'name': '36键模式',
         'notes': GAME_NOTES_36KEY,
-        'note_to_key': {info['note']: key for key, info in GAME_NOTES_36KEY.items()},
+        'note_to_key': {note: key.lower() for key, info in GAME_NOTES_36KEY.items() 
+                       for note in [info['note']]},
         'octave_bases': OCTAVE_BASES_36KEY,
         'playable_min': 47,  # 最低音
         'playable_max': 84   # 最高音

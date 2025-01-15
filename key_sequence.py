@@ -140,20 +140,60 @@ class KeySequence:
             if playable_min <= adjusted_note <= playable_max and adjusted_note in note_to_key:
                 key = note_to_key[adjusted_note]
                 current_state = note_states.get(adjusted_note, False)
+                event_time = calculate_real_time(event['tick'])
                 
                 # 检查状态变化的有效性
                 if event['is_press'] != current_state:
-                    event_time = calculate_real_time(event['tick'])
-                    all_events.append(KeyEvent(
-                        key=key,
-                        press=event['is_press'],
-                        time=event_time,
-                        note=adjusted_note,
-                        velocity=event['velocity'] if event['is_press'] else 0
-                    ))
+                    if '+' in key:  # 处理组合键
+                        modifier, main_key = key.split('+')
+                        if event['is_press']:
+                            # 按下修饰键
+                            all_events.append(KeyEvent(
+                                key=modifier,
+                                press=True,
+                                time=event_time,
+                                note=adjusted_note,
+                                velocity=event['velocity']
+                            ))
+                            # 按下主键
+                            all_events.append(KeyEvent(
+                                key=main_key,
+                                press=True,
+                                time=event_time + 0.001,  # 稍微延迟主键按下
+                                note=adjusted_note,
+                                velocity=event['velocity']
+                            ))
+                            # 立即释放修饰键
+                            all_events.append(KeyEvent(
+                                key=modifier,
+                                press=False,
+                                time=event_time + 0.002,  # 在主键按下后立即释放
+                                note=adjusted_note,
+                                velocity=0
+                            ))
+                        else:
+                            # 只需要释放主键
+                            all_events.append(KeyEvent(
+                                key=main_key,
+                                press=False,
+                                time=event_time,
+                                note=adjusted_note,
+                                velocity=0
+                            ))
+                    else:
+                        # 普通键的处理保持不变
+                        all_events.append(KeyEvent(
+                            key=key,
+                            press=event['is_press'],
+                            time=event_time,
+                            note=adjusted_note,
+                            velocity=event['velocity'] if event['is_press'] else 0
+                        ))
+                    
                     note_states[adjusted_note] = event['is_press']
         
-        sequence.events = all_events
+        # 按时间顺序排序所有事件
+        sequence.events = sorted(all_events, key=lambda e: (e.time, not e.press))
         
         # 验证序列的完整性
         note_validation = {}

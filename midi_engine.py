@@ -94,3 +94,4 @@ class MidiEngine:
             'total_time': self._total_time,
             'current_file': self.midi_files[self.current_index] if self.current_index >= 0 else None
         } 
+#触发更新

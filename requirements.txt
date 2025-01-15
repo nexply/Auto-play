@@ -1,0 +1,7 @@
+PyQt5>=5.15.0
+keyboard>=0.13.5
+mido>=1.2.10
+python-rtmidi>=1.4.9
+pywin32>=305
+pyinstaller>=5.13.0
+pygame>=2.1.0 

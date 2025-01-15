@@ -13,12 +13,12 @@ class NoteRangeOptimizer:
         
         # 音符权重配置
         self.weights = {
-            'coverage': 0.3,      # 可播放音符覆盖率权重
-            'density': 0.2,       # 音符密度权重
-            'melody': 0.2,        # 旋律线权重
-            'transition': 0.1,    # 音符跳转权重
-            'pentatonic': 0.1,    # 五声音阶匹配度权重
-            'octave_balance': 0.1 # 八度平衡权重
+            'coverage': 0.4,      # 增加覆盖率权重
+            'density': 0.1,       # 降低密度权重
+            'melody': 0.3,        # 增加旋律线权重
+            'transition': 0.1,    # 保持过渡权重
+            'pentatonic': 0.05,   # 降低五声音阶匹配权重
+            'octave_balance': 0.05 # 降低八度平衡权重
         }
         
         # 定义目标音阶
@@ -28,11 +28,11 @@ class NoteRangeOptimizer:
         
         # 定义过渡音和装饰音的重要性
         self.transition_notes = {
-            1: 0.8,   # 小二度，作为装饰音
-            3: 0.7,   # 小三度，作为过渡音
-            6: 0.6,   # 增四度，作为特殊音程
-            8: 0.7,   # 小六度，作为和声音
-            10: 0.6,  # 小七度，作为导音
+            1: 0.9,   # 增加小二度重要性
+            3: 0.8,   # 增加小三度重要性
+            6: 0.7,   # 增加增四度重要性
+            8: 0.8,   # 增加小六度重要性
+            10: 0.7,  # 增加小七度重要性
         }
         
         # 缓存计算结果
@@ -63,18 +63,25 @@ class NoteRangeOptimizer:
         return stats
     
     def find_best_offset(self, notes: List[int], velocities: Optional[List[int]] = None) -> Tuple[int, float]:
-        """找到最佳音域偏移量"""
+        """找到最佳音域偏移量（改进版）"""
         stats = self.analyze_notes(notes, velocities)
         
         best_offset = 0
         best_score = 0
         
-        # 计算合理的搜索范围
-        min_offset = self.playable_min - stats['min_note']
-        max_offset = self.playable_max - stats['max_note']
+        # 计算原始音域的中心点
+        original_center = (stats['min_note'] + stats['max_note']) / 2
+        # 计算目标音域的中心点
+        target_center = (self.playable_min + self.playable_max) / 2
+        # 计算建议的基础偏移量
+        suggested_offset = int(target_center - original_center)
         
-        # 在合理范围内搜索最佳偏移
-        for offset in range(min_offset, max_offset + 1):
+        # 在建议偏移量附近搜索最佳值
+        search_range = 12  # 在建议值上下一个八度范围内搜索
+        min_offset = max(self.playable_min - stats['max_note'], suggested_offset - search_range)
+        max_offset = min(self.playable_max - stats['min_note'], suggested_offset + search_range)
+        
+        for offset in range(int(min_offset), int(max_offset) + 1):
             score = self._calculate_fitness(stats, offset)
             if score > best_score:
                 best_score = score
@@ -190,19 +197,28 @@ class NoteRangeOptimizer:
         return 1 - (np.std(values) / np.mean(values)) if values else 0
     
     def _calculate_melody_score(self, stats: Dict, offset: int) -> float:
-        """计算旋律线得分"""
+        """计算旋律线得分（改进版）"""
         melody_stats = stats['melody_line']
         if not melody_stats:
             return 0
             
+        # 计算与原始音高的偏差
+        original_notes = list(stats['distribution'].keys())
+        shifted_notes = [note + offset for note in original_notes]
+        
+        # 计算平均偏差（越小越好）
+        avg_deviation = sum(abs(s - o) for s, o in zip(shifted_notes, original_notes)) / len(original_notes)
+        deviation_score = 1.0 / (1.0 + avg_deviation / 12.0)  # 归一化到0-1范围
+        
         # 评估旋律跳进是否合理
         avg_change = melody_stats['avg_change']
         max_change = melody_stats['max_change']
         
-        # 偏好适中的音程变化
+        # 偏好保持原始的音程关系
         change_score = 1.0 - (avg_change / 12.0 if avg_change <= 12 else 1.0)
         
-        return change_score
+        # 综合得分，更重视保持原始音高
+        return (deviation_score * 0.7 + change_score * 0.3)
     
     def _calculate_transition_score(self, stats: Dict, offset: int) -> float:
         """计算转换平滑度得分"""

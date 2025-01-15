@@ -122,6 +122,13 @@ class MainWindow:
                                              state=tk.DISABLED)
         self.preview_adjusted_btn.pack(side=tk.LEFT, padx=2)
         
+        # 在控制按钮区域添加模式切换
+        self.message_mode_var = tk.BooleanVar(value=False)
+        mode_cb = ttk.Checkbutton(control_frame, text="使用消息模式", 
+                                 variable=self.message_mode_var,
+                                 command=self.toggle_message_mode)
+        mode_cb.pack(side=tk.LEFT, padx=5)
+        
         # 使用说明
         ttk.Label(right_frame, text="使用说明：\n"
                  "1. 使用管理员权限启动\n"
@@ -201,7 +208,18 @@ class MainWindow:
                 lambda *args, l=value_label, v=self.octave_vars[key]:
                 l.configure(text=f"{v.get():.2f}"))
         
-        # 添加重置按钮
+        # 在参数调整面板中添加预设控制
+        preset_frame = ttk.Frame(params_frame)
+        preset_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(preset_frame, text="保存预设",
+                   command=self.save_current_preset).pack(side=tk.LEFT, padx=2)
+        ttk.Button(preset_frame, text="加载预设",
+                   command=self.load_preset).pack(side=tk.LEFT, padx=2)
+        ttk.Button(preset_frame, text="删除预设",
+                   command=self.delete_preset).pack(side=tk.LEFT, padx=2)
+        
+        # 重置按钮放在最后
         ttk.Button(params_frame, text="重置为默认值",
                    command=self.reset_optimization_params).pack(pady=5)
 
@@ -314,6 +332,20 @@ class MainWindow:
                 
                 # 启用控制按钮
                 self.enable_buttons()
+                
+                # 尝试加载预设
+                song_name = os.path.basename(self.midi_files[self.current_index])
+                preset = self.preset_manager.load_preset(song_name)
+                if preset:
+                    # 自动应用预设
+                    for key, value in preset['weights'].items():
+                        self.weight_vars[key].set(value)
+                        self.midi_player.note_optimizer.weights[key] = value
+                    
+                    for key, value in preset['octave_weights'].items():
+                        self.octave_vars[key].set(value)
+                        
+
         except Exception as e:
             print(f"选择歌曲时出错: {str(e)}")
 
@@ -326,14 +358,14 @@ class MainWindow:
             self.tracks_list.insert(tk.END, "◆ 全部音轨")
             
             # 添加各个音轨信息
-            if hasattr(self.midi_player, 'tracks_info'):
-                for track in self.midi_player.tracks_info:
-                    track_info = f"◇ {track['name']} [音符: {track['notes_count']}]"
-                    self.tracks_list.insert(tk.END, track_info)
+            for track in self.midi_player.tracks_info:
+                track_info = f"◇ {track['name']} ({track['notes_count']}音符)"
+                self.tracks_list.insert(tk.END, track_info)
             
             # 默认选择全部音轨
             self.tracks_list.selection_set(0)
-            self.midi_player.set_track(None)
+            self.midi_player.selected_track = None  # None 表示播放全部音轨
+            
         except Exception as e:
             print(f"更新音轨列表时出错: {str(e)}")
 
@@ -348,17 +380,18 @@ class MainWindow:
             
             # 检查是否选择了"全部音轨"
             if current_row == 0:
-                self.midi_player.set_track(None)
+                self.midi_player.selected_track = None
             else:
-                # 设置选中的音轨
+                # 设置选中的音轨（索引需要减1，因为第一项是"全部音轨"）
                 if current_row - 1 < len(self.midi_player.tracks_info):
-                    channel = self.midi_player.tracks_info[current_row - 1]['channel']
-                    self.midi_player.set_track(channel)
+                    track_info = self.midi_player.tracks_info[current_row - 1]
+                    self.midi_player.selected_track = track_info['index']
             
             # 如果正在播放，重新开始播放选中的音轨
             if self.midi_player.playing:
                 self.stop_playback()
                 self.start_playback()
+            
         except Exception as e:
             print(f"选择音轨时出错: {str(e)}")
 
@@ -721,5 +754,97 @@ class MainWindow:
             
         except Exception as e:
             print(f"刷新MIDI文件列表时出错: {str(e)}")
+        
+    def toggle_message_mode(self):
+        """切换消息发送模式"""
+        try:
+            self.midi_player.use_message_mode = self.message_mode_var.get()
+            # 如果正在播放，需要重新开始以应用新模式
+            if self.midi_player.playing:
+                was_playing = True
+                self.stop_playback()
+            else:
+                was_playing = False
+            
+            # 更新提示文本
+            if self.midi_player.use_message_mode:
+                messagebox.showinfo("模式切换", "已切换到消息发送模式，无需窗口置顶即可播放")
+            else:
+                messagebox.showinfo("模式切换", "已切换到模拟按键模式，需要窗口置顶才能播放")
+            
+            # 如果之前在播放，重新开始播放
+            if was_playing:
+                self.start_playback()
+        except Exception as e:
+            print(f"切换消息模式时出错: {str(e)}")
+        
+    def save_current_preset(self):
+        """保存当前参数为预设"""
+        try:
+            if self.current_index < 0:
+                messagebox.showwarning("提示", "请先选择一首歌曲")
+                return
+            
+            song_name = os.path.basename(self.midi_files[self.current_index])
+            
+            # 收集当前参数
+            params = {
+                'weights': {k: v.get() for k, v in self.weight_vars.items()},
+                'octave_weights': {k: v.get() for k, v in self.octave_vars.items()}
+            }
+            
+            if self.preset_manager.save_preset(song_name, params):
+                messagebox.showinfo("成功", f"已保存预设: {song_name}")
+            else:
+                messagebox.showerror("错误", "保存预设失败")
+            
+        except Exception as e:
+            print(f"保存预设时出错: {str(e)}")
+
+    def load_preset(self):
+        """加载预设"""
+        try:
+            if self.current_index < 0:
+                messagebox.showwarning("提示", "请先选择一首歌曲")
+                return
+            
+            song_name = os.path.basename(self.midi_files[self.current_index])
+            preset = self.preset_manager.load_preset(song_name)
+            
+            if preset:
+                # 更新权重
+                for key, value in preset['weights'].items():
+                    self.weight_vars[key].set(value)
+                    self.midi_player.note_optimizer.weights[key] = value
+                
+                # 更新八度权重
+                for key, value in preset['octave_weights'].items():
+                    self.octave_vars[key].set(value)
+                
+                # 应用新的参数
+                self.reanalyze_current_song()
+                messagebox.showinfo("成功", f"已加载预设: {song_name}")
+            else:
+                messagebox.showinfo("提示", "未找到该歌曲的预设")
+            
+        except Exception as e:
+            print(f"加载预设时出错: {str(e)}")
+
+    def delete_preset(self):
+        """删除预设"""
+        try:
+            if self.current_index < 0:
+                messagebox.showwarning("提示", "请先选择一首歌曲")
+                return
+            
+            song_name = os.path.basename(self.midi_files[self.current_index])
+            if messagebox.askyesno("确认", f"确定要删除 {song_name} 的预设吗？"):
+                if self.preset_manager.delete_preset(song_name):
+                    messagebox.showinfo("成功", "预设已删除")
+                else:
+                    messagebox.showerror("错误", "删除预设失败")
+                
+        except Exception as e:
+            print(f"删除预设时出错: {str(e)}")
         
     # ... [其他方法的实现与原QT版本类似，只需要调整UI相关的代码] 

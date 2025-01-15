@@ -13,6 +13,7 @@ import pygame
 from sound_manager import SoundManager
 from note_range_optimizer import NoteRangeOptimizer
 from typing import Optional, Tuple
+from key_sender import KeySender
 
 def is_admin():
     """检查是否具有管理员权限"""
@@ -85,6 +86,10 @@ class MidiPlayer:
         
         self.preview_mode = False
         self.preview_original = False  # 是否预览原始音高
+        
+        # 添加按键发送器
+        self.key_sender = KeySender()
+        self.use_message_mode = False  # 是否使用消息发送模式
     def _analyze_tracks(self, mid):
         """分析MIDI文件的音轨信息（内部方法）"""
         tracks_info = []
@@ -102,10 +107,11 @@ class MidiPlayer:
                     all_velocities.append(msg.velocity)
             
             if notes:  # 只添加包含音符的音轨
+                track_name = track.name if hasattr(track, 'name') else f"音轨 {i+1}"
                 tracks_info.append({
                     'index': i,
-                    'name': track.name if hasattr(track, 'name') else f"音轨 {i+1}",
-                    'note_count': len(notes),
+                    'name': self._decode_track_name(track_name),
+                    'notes_count': len(notes),
                     'note_range': (min(notes), max(notes))
                 })
         
@@ -180,24 +186,24 @@ class MidiPlayer:
         """按下键位"""
         try:
             if key not in self._pressed_keys:
-                if '+' in key:  # 处理组合键
-                    parts = key.split('+')
-                    modifier, base_key = parts[0], parts[1]
-                    try:
-                        # 批量处理按键操作
+                if self.use_message_mode:
+                    # 使用消息发送模式
+                    if '+' in key:  # 处理组合键
+                        parts = key.split('+')
+                        self.key_sender.send_key(parts[1], True)
+                    else:
+                        self.key_sender.send_key(key, True)
+                else:
+                    # 原有的模拟按键模式
+                    if '+' in key:
+                        parts = key.split('+')
+                        modifier, base_key = parts[0], parts[1]
                         keyboard.press(modifier)
                         keyboard.press(base_key)
                         keyboard.release(modifier)
                         keyboard.release(base_key)
-                    except Exception as e:
-                        print(f"组合键操作出错 {key}: {str(e)}")
-                        return
-                else:
-                    try:
+                    else:
                         keyboard.press(key)
-                    except Exception as e:
-                        print(f"单键操作出错 {key}: {str(e)}")
-                        return
                 self._pressed_keys.add(key)
         except Exception as e:
             print(f"按键处理出错 {key}: {str(e)}")
@@ -206,18 +212,19 @@ class MidiPlayer:
         """释放键位"""
         try:
             if key in self._pressed_keys:
-                if '+' in key:  # 处理组合键
-                    try:
-                        keyboard.release(key.split('+')[1])
-                    except Exception as e:
-                        print(f"组合键释放出错 {key}: {str(e)}")
-                        return
+                if self.use_message_mode:
+                    # 使用消息发送模式
+                    if '+' in key:
+                        parts = key.split('+')
+                        self.key_sender.send_key(parts[1], False)
+                    else:
+                        self.key_sender.send_key(key, False)
                 else:
-                    try:
+                    # 原有的模拟按键模式
+                    if '+' in key:
+                        keyboard.release(key.split('+')[1])
+                    else:
                         keyboard.release(key)
-                    except Exception as e:
-                        print(f"单键释放出错 {key}: {str(e)}")
-                        return
                 self._pressed_keys.remove(key)
         except Exception as e:
             print(f"释放按键出错 {key}: {str(e)}")
@@ -417,79 +424,59 @@ class MidiPlayer:
         """MIDI播放线程"""
         try:
             if not self._cached_mid:
-                print("未找到缓存的MIDI文件")
-                return
-                
-            last_pause_check = time.time()
+                self._cached_mid = mido.MidiFile(self.current_file)
             
-            # 获取播放状态的本地副本
+            mid = self._cached_mid
+            is_playing = True
+            
+            # 获取选中的音轨和预览模式状态
             with self._lock:
-                is_playing = self.playing
-                is_paused = self.paused
                 selected_track = self.selected_track
                 preview_mode = self.preview_mode
                 preview_original = self.preview_original
             
-            # 使用缓存的MIDI文件
-            for msg in self._cached_mid.play(meta_messages=True):
-                # 快速检查播放状态
+            # 重置计时器
+            with self._lock:
+                self.start_time = time.time() * 1000
+                self.pause_time = 0
+                self.total_pause_time = 0
+            
+            # 播放MIDI消息
+            for msg in mid.play():
+                # 检查是否需要暂停或停止
                 with self._lock:
-                    is_playing = self.playing
-                    is_paused = self.paused
-                    if not is_playing:
+                    if not self.playing:
+                        is_playing = False
                         break
+                    if self.paused:
+                        if self.pause_time == 0:
+                            self.pause_time = time.time() * 1000
+                        time.sleep(0.1)
+                        continue
+                    elif self.pause_time > 0:
+                        self.total_pause_time += time.time() * 1000 - self.pause_time
+                        self.pause_time = 0
                 
-                # 只在非预览模式下检查窗口状态
-                if not preview_mode:
-                    current_time = time.time()
-                    if current_time - last_pause_check >= 0.1:
-                        # 检查窗口状态
-                        if not self._check_active_window():
-                            if not self.auto_paused and not is_paused:
-                                print("窗口切换，自动暂停播放")
-                                with self._lock:
-                                    self.paused = True
-                                    self.auto_paused = True
-                                is_paused = True
-                        elif self.auto_paused and is_paused:
-                            print("窗口恢复，继续播放")
-                            with self._lock:
-                                self.paused = False
-                                self.auto_paused = False
-                            is_paused = False
-                        
-                        # 更新状态
-                        with self._lock:
-                            is_playing = self.playing
-                            is_paused = self.paused
-                            selected_track = self.selected_track
-                            if self.pause_time:
-                                pause_duration = current_time * 1000 - self.pause_time
-                                self.total_pause_time += pause_duration
-                                self.pause_time = 0
-                        
-                        last_pause_check = current_time
-                
-                # 处理暂停
-                if is_paused:
-                    time.sleep(0.1)
-                    continue
+                    # 更新预览模式状态
+                    preview_mode = self.preview_mode
+                    preview_original = self.preview_original
                 
                 # 处理音符消息
                 if msg.type == 'note_on' and hasattr(msg, 'channel'):
+                    # selected_track 为 None 时会播放所有音轨
                     if selected_track is None or msg.channel == selected_track:
                         note = self._adjust_note(msg.note)
                         if preview_mode:
                             # 预览模式：同时播放原始和调整后的音符
                             if msg.velocity > 0:
-                                if self.preview_original:
+                                if preview_original:
                                     # 播放原始音高
                                     self.sound_manager.play_note(msg.note, msg.velocity, True)
                                 else:
                                     # 播放调整后的音高
                                     self.sound_manager.play_note(note, msg.velocity, False)
                             else:
-                                if self.preview_original:
+                                if preview_original:
                                     self.sound_manager.stop_note(msg.note, True)
                                 else:
                                     self.sound_manager.stop_note(note, False)
@@ -503,7 +490,7 @@ class MidiPlayer:
                         note = self._adjust_note(msg.note)
                         if preview_mode:
                             # 预览模式：停止音符
-                            if self.preview_original:
+                            if preview_original:
                                 self.sound_manager.stop_note(msg.note, True)
                             else:
                                 self.sound_manager.stop_note(note, False)
@@ -524,16 +511,18 @@ class MidiPlayer:
         """暂停或继续播放"""
         with self._lock:
             if self.playing:
-                # 如果是自动暂停，不允许手动继续播放，除非窗口已经恢复
-                if self.auto_paused and not self._check_active_window():
-                    print("请切换到游戏窗口后再继续播放")
-                    return
+                # 如果是消息模式，不需要检查窗口状态
+                if not self.use_message_mode:
+                    # 如果是自动暂停，不允许手动继续播放，除非窗口已经恢复
+                    if self.auto_paused and not self._check_active_window():
+                        print("请切换到游戏窗口后再继续播放")
+                        return
                     
-                # 如果要继续播放，先检查游戏窗口
-                if self.paused and not self._switch_to_game_window():
-                    print(f"警告: 未找到游戏窗口 '{self.target_window_name}'，请确保游戏已启动")
-                    return
-                    
+                    # 如果要继续播放，先检查游戏窗口
+                    if self.paused and not self._switch_to_game_window():
+                        print(f"警告: 未找到游戏窗口 '{self.target_window_name}'，请确保游戏已启动")
+                        return
+                
                 self.paused = not self.paused
                 self.auto_paused = False  # 清除自动暂停标记
                 if not self.paused:
@@ -583,48 +572,72 @@ class MidiPlayer:
             return self._note_key_cache[cache_key]
         
         shifted_note = note + self.note_offset
-        base_note = (shifted_note // 12) * 12
+        original_octave = shifted_note // 12
         interval = shifted_note % 12
         
-        # 如果音符已经在可播放范围内且在五声音阶上，直接返回
-        if (self.PLAYABLE_MIN <= shifted_note <= self.PLAYABLE_MAX and 
-            interval in PENTATONIC_INTERVALS):
-            self._note_key_cache[cache_key] = shifted_note
-            return shifted_note
+        # 如果音符已经在可播放范围内，尽量保持原样
+        if self.PLAYABLE_MIN <= shifted_note <= self.PLAYABLE_MAX:
+            if interval in PENTATONIC_INTERVALS:
+                # 完全符合要求，直接返回
+                self._note_key_cache[cache_key] = shifted_note
+                return shifted_note
+            else:
+                # 在同一个八度内寻找最近的五声音阶音符
+                base_note = original_octave * 12
+                candidates = []
+                for p_interval in PENTATONIC_INTERVALS:
+                    candidate = base_note + p_interval
+                    if self.PLAYABLE_MIN <= candidate <= self.PLAYABLE_MAX:
+                        distance = abs(shifted_note - candidate)
+                        candidates.append((candidate, distance))
+                
+                if candidates:
+                    # 选择最近的音符
+                    best_note = min(candidates, key=lambda x: x[1])[0]
+                    self._note_key_cache[cache_key] = best_note
+                    return best_note
         
-        # 寻找最近的可播放音符
+        # 如果音符超出范围，尝试最小的调整
+        if shifted_note < self.PLAYABLE_MIN:
+            # 向上找最近的八度
+            while shifted_note < self.PLAYABLE_MIN:
+                shifted_note += 12
+        elif shifted_note > self.PLAYABLE_MAX:
+            # 向下找最近的八度
+            while shifted_note > self.PLAYABLE_MAX:
+                shifted_note -= 12
+        
+        # 在调整后的八度内找最近的五声音阶音符
+        base_note = (shifted_note // 12) * 12
         candidates = []
         for p_interval in PENTATONIC_INTERVALS:
             candidate = base_note + p_interval
             if self.PLAYABLE_MIN <= candidate <= self.PLAYABLE_MAX:
                 distance = abs(shifted_note - candidate)
-                # 计算音符重要性
-                importance = self.note_optimizer._calculate_note_importance(interval)
-                candidates.append((candidate, distance, importance))
+                candidates.append((candidate, distance))
         
         if candidates:
-            # 根据距离和重要性选择最佳音符
-            best_note = min(candidates, key=lambda x: x[1] - x[2] * 2)[0]
+            best_note = min(candidates, key=lambda x: x[1])[0]
             self._note_key_cache[cache_key] = best_note
             return best_note
         
-        # 如果没有找到合适的候选音符，尝试移动到最近的八度
-        while shifted_note < self.PLAYABLE_MIN:
-            shifted_note += 12
-        while shifted_note > self.PLAYABLE_MAX:
-            shifted_note -= 12
-        
-        self._note_key_cache[cache_key] = shifted_note
-        return shifted_note
+        # 如果还是找不到合适的音符，使用最接近的可播放音符
+        best_note = max(min(shifted_note, self.PLAYABLE_MAX), self.PLAYABLE_MIN)
+        self._note_key_cache[cache_key] = best_note
+        return best_note
 
     def _check_active_window(self):
         """检查当前活动窗口是否为目标窗口"""
         try:
+            # 如果是消息模式，不需要检查窗口状态
+            if self.use_message_mode:
+                return True
+            
             current_time = time.time()
             # 使用缓存的状态
             if current_time - self.last_window_check < self.window_check_interval:
                 return self.last_window_state
-                
+            
             self.last_window_check = current_time
             active_window = win32gui.GetForegroundWindow()
             window_title = win32gui.GetWindowText(active_window)

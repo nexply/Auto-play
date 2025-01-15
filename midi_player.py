@@ -254,7 +254,14 @@ class MidiPlayer:
                 if self.use_message_mode:
                     if not self.key_sender:
                         self.key_sender = KeySender()
-                    self.key_sender.send_key(key, True)
+                    # 处理组合键
+                    if '+' in key:
+                        parts = key.split('+')
+                        # 对于shift+和ctrl+的组合键，需要分别发送
+                        for part in parts:
+                            self.key_sender.send_key(part, True)
+                    else:
+                        self.key_sender.send_key(key, True)
                 else:
                     # 处理组合键
                     if '+' in key:
@@ -278,7 +285,14 @@ class MidiPlayer:
             if key in self._pressed_keys:
                 if self.use_message_mode:
                     if self.key_sender:
-                        self.key_sender.send_key(key, False)
+                        # 处理组合键
+                        if '+' in key:
+                            parts = key.split('+')
+                            # 按相反顺序释放按键
+                            for part in reversed(parts):
+                                self.key_sender.send_key(part, False)
+                        else:
+                            self.key_sender.send_key(key, False)
                 else:
                     # 处理组合键
                     if '+' in key:
@@ -451,7 +465,13 @@ class MidiPlayer:
             self.paused = False
             self.preview_mode = preview_mode
             
-            # 创建播放线程
+            # 获取当前模式的配置
+            mode = '36key' if self.use_36key_mode else '21key'
+            mode_config = PLAY_MODES[mode]
+            self.note_to_key = mode_config['note_to_key']
+            self.playable_min = mode_config['playable_min']
+            self.playable_max = mode_config['playable_max']
+            
             def play_thread():
                 try:
                     mid = mido.MidiFile(file_path)
@@ -461,13 +481,18 @@ class MidiPlayer:
                     self._pressed_keys.clear()
                     self.sound_manager.stop_all()
                     
-                    for msg in mid.play():
+                    for msg in mid.play(meta_messages=True):  # 启用meta消息以处理tempo变化
                         if not self.playing:
                             break
                         
                         if self.paused:
                             time.sleep(0.001)
                             continue
+                        
+                        # 根据播放速度调整消息时间
+                        if hasattr(msg, 'time'):
+                            adjusted_time = msg.time / self.playback_speed
+                            time.sleep(adjusted_time)
                         
                         if msg.type == 'note_on' or msg.type == 'note_off':
                             # 处理音符事件
@@ -1209,3 +1234,94 @@ class MidiPlayer:
                 self.total_pause_time = 0
         except Exception as e:
             print(f"停止播放时出错: {str(e)}") 
+
+    def set_playback_speed(self, speed: float):
+        """设置播放速度
+        Args:
+            speed: 速度倍率，1.0为原速，大于1加速，小于1减速
+        """
+        self.playback_speed = max(0.1, min(speed, 3.0))  # 限制在0.1-3.0倍速范围内
+        print(f"设置播放速度: {self.playback_speed}x")
+
+    def play_file(self, file_path: str, preview_mode: bool = False, preview_original: bool = False) -> bool:
+        """播放MIDI文件"""
+        try:
+            if not os.path.exists(file_path):
+                return False
+            
+            self.current_file = file_path
+            self.playing = True
+            self.paused = False
+            self.preview_mode = preview_mode
+            
+            # 获取当前模式的配置
+            mode = '36key' if self.use_36key_mode else '21key'
+            mode_config = PLAY_MODES[mode]
+            self.note_to_key = mode_config['note_to_key']
+            self.playable_min = mode_config['playable_min']
+            self.playable_max = mode_config['playable_max']
+            
+            def play_thread():
+                try:
+                    mid = mido.MidiFile(file_path)
+                    start_time = time.time()
+                    
+                    # 重置所有状态
+                    self._pressed_keys.clear()
+                    self.sound_manager.stop_all()
+                    
+                    for msg in mid.play(meta_messages=True):  # 启用meta消息以处理tempo变化
+                        if not self.playing:
+                            break
+                        
+                        if self.paused:
+                            time.sleep(0.001)
+                            continue
+                        
+                        # 根据播放速度调整消息时间
+                        if hasattr(msg, 'time'):
+                            adjusted_time = msg.time / self.playback_speed
+                            time.sleep(adjusted_time)
+                        
+                        if msg.type == 'note_on' or msg.type == 'note_off':
+                            # 处理音符事件
+                            is_note_on = msg.type == 'note_on' and msg.velocity > 0
+                            
+                            if preview_mode:
+                                # 预览模式：根据是否为原始预览决定是否应用音符偏移
+                                note = msg.note if preview_original else (msg.note + self.note_offset)
+                                if is_note_on:
+                                    self.sound_manager.play_note(note, msg.velocity, preview_original)
+                                else:
+                                    self.sound_manager.stop_note(note, preview_original)
+                            else:
+                                # 正常模式：模拟按键
+                                adjusted_note = msg.note + self.note_offset
+                                if self.playable_min <= adjusted_note <= self.playable_max:
+                                    key = self.note_to_key.get(adjusted_note)
+                                    if key:
+                                        if is_note_on:
+                                            self._press_key(key)
+                                        else:
+                                            self._release_key(key)
+                    
+                    # 播放结束后清理
+                    self.playing = False
+                    self._release_all_keys()
+                    self.sound_manager.stop_all()
+                    
+                except Exception as e:
+                    print(f"播放线程出错: {str(e)}")
+                    self.playing = False
+                    self._release_all_keys()
+                    self.sound_manager.stop_all()
+            
+            # 启动播放线程
+            self.play_thread = threading.Thread(target=play_thread)
+            self.play_thread.daemon = True
+            self.play_thread.start()
+            return True
+            
+        except Exception as e:
+            print(f"播放MIDI文件时出错: {str(e)}")
+            return False 

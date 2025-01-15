@@ -3,7 +3,7 @@ import time
 import mido
 from typing import List, Dict, Union, Optional
 from dataclasses import dataclass
-from keyboard_mapping import NOTE_TO_KEY, NOTE_TO_KEY_36KEY, PLAY_MODES
+from keyboard_mapping import PLAY_MODES
 
 @dataclass
 class KeyEvent:

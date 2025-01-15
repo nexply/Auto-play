@@ -274,6 +274,20 @@ class MainWindow:
                    command=self.stop_recording).pack(fill=tk.X, pady=2)
         ttk.Button(sequence_frame, text="保存录制序列",
                    command=self.save_sequence).pack(fill=tk.X, pady=2)
+        
+        # 播放速度控制
+        speed_frame = ttk.LabelFrame(basic_tab, text="播放速度")
+        speed_frame.pack(fill=tk.X, pady=5, padx=5)
+        
+        self.speed_var = tk.DoubleVar(value=1.0)
+        speed_scale = ttk.Scale(speed_frame, from_=0.1, to=3.0, 
+                               variable=self.speed_var,
+                               command=self.update_speed)
+        speed_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
+        # 显示具体数值
+        self.speed_label = ttk.Label(speed_frame, text="1.00x")
+        self.speed_label.pack(side=tk.LEFT, padx=5)
 
     def load_config(self):
         """加载配置文件"""
@@ -1147,5 +1161,22 @@ class MainWindow:
                 
         except Exception as e:
             print(f"加载预设时出错: {str(e)}")
+        
+    def update_speed(self, *args):
+        """更新播放速度"""
+        try:
+            speed = self.speed_var.get()
+            self.speed_label.config(text=f"{speed:.2f}x")
+            self.midi_player.set_playback_speed(speed)
+            
+            # 如果正在播放，重新开始播放以应用新速度
+            if self.midi_player.playing:
+                current_file = self.midi_player.current_file
+                preview_mode = self.midi_player.preview_mode
+                self.stop_playback()
+                self.midi_player.play_file(current_file, preview_mode=preview_mode)
+                
+        except Exception as e:
+            print(f"更新播放速度时出错: {str(e)}")
         
     # ... [其他方法的实现与原QT版本类似，只需要调整UI相关的代码] 

@@ -22,7 +22,7 @@
 ## 使用方法
 
 1. **下载和运行**
-   - 从 [Releases](../../releases) 页面下载最新版本的`燕云自动演奏.exe`
+   - 从 [Releases](../../releases) 页面下载最新版本的`yyslsAuto-play.zip`
    - 将exe文件放在单独的文件夹中
    - 右键点击exe文件，选择"以管理员身份运行"
 

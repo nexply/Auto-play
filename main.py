@@ -24,7 +24,7 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # 在主程序中添加或更新版本号
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 class Config:
     def __init__(self, filename="config.json"):

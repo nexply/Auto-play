@@ -12,7 +12,7 @@ import keyboard
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QPushButton, QLabel, QFileDialog,
                            QListWidget, QStyle, QStyleFactory, QLineEdit, QComboBox, QCheckBox)
-from PyQt5.QtCore import Qt, QTimer, QMetaObject, Q_ARG, pyqtSlot
+from PyQt5.QtCore import Qt, QTimer, QMetaObject, Q_ARG, pyqtSlot, QThread
 from PyQt5.QtGui import QPalette, QColor, QIcon
 from midi_player import MidiPlayer
 from keyboard_mapping import CONTROL_KEYS
@@ -428,8 +428,8 @@ class MainWindow(QMainWindow):
 
     def update_button_states(self):
         """更新按钮状态"""
-        # 重置所有按钮样式
-        self.play_button.setStyleSheet("""
+        # 定义基础样式
+        base_style = """
             QPushButton {
                 background-color: #ffffff;
                 border: 1px solid #cccccc;
@@ -442,71 +442,75 @@ class MainWindow(QMainWindow):
                 background-color: #e6e6e6;
                 border-color: #adadad;
             }
-        """)
-        self.pause_button.setStyleSheet(self.play_button.styleSheet())
-        self.stop_button.setStyleSheet(self.play_button.styleSheet())
+        """
+        
+        # 定义高亮样式
+        highlight_style = """
+            QPushButton {
+                background-color: #5cb85c;
+                border: 1px solid #4cae4c;
+                border-radius: 4px;
+                padding: 5px 15px;
+                min-width: 80px;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #449d44;
+                border-color: #398439;
+            }
+        """
+        
+        # 重置所有按钮样式
+        self.play_button.setStyleSheet(base_style)
+        self.pause_button.setStyleSheet(base_style)
+        self.stop_button.setStyleSheet(base_style)
 
         # 根据播放状态设置高亮
         if self.midi_player.playing:
             if self.midi_player.paused:
-                # 暂停状态：暂停按钮高亮
-                self.pause_button.setStyleSheet("""
-                    QPushButton {
-                        background-color: #5cb85c;
-                        border: 1px solid #4cae4c;
-                        border-radius: 4px;
-                        padding: 5px 15px;
-                        min-width: 80px;
-                        color: white;
-                    }
-                    QPushButton:hover {
-                        background-color: #449d44;
-                        border-color: #398439;
-                    }
-                """)
+                self.pause_button.setStyleSheet(highlight_style)
             else:
-                # 播放状态：播放按钮高亮
-                self.play_button.setStyleSheet("""
-                    QPushButton {
-                        background-color: #5cb85c;
-                        border: 1px solid #4cae4c;
-                        border-radius: 4px;
-                        padding: 5px 15px;
-                        min-width: 80px;
-                        color: white;
-                    }
-                    QPushButton:hover {
-                        background-color: #449d44;
-                        border-color: #398439;
-                    }
-                """)
+                self.play_button.setStyleSheet(highlight_style)
 
     def start_playback(self):
+        """开始播放"""
         if self.current_index >= 0:
+            # 先启动计时器（在主线程）
+            if not self.progress_timer.isActive():
+                self.progress_timer.start()
+            # 然后开始播放
             self.midi_player.play_file(self.midi_files[self.current_index])
-            # 使用 QMetaObject.invokeMethod 在主线程中更新 UI
-            QMetaObject.invokeMethod(self, "update_ui_after_playback",
-                                   Qt.QueuedConnection)
+            self.update_ui_state("play")
 
     @pyqtSlot(str)
     def update_ui_state(self, state):
         """统一处理UI状态更新"""
-        self.update_button_states()
-        
-        if state == "play":
-            if not self.progress_timer.isActive():
-                self.progress_timer.start()
-        elif state == "stop":
-            if self.progress_timer.isActive():
-                self.progress_timer.stop()
-            self.time_label.setText("剩余时间: 00:00")
-        elif state == "pause":
-            if self.midi_player.paused:
-                if self.progress_timer.isActive():
-                    self.progress_timer.stop()
-            else:
+        try:
+            # 确保在主线程中执行
+            if QThread.currentThread() != QApplication.instance().thread():
+                QMetaObject.invokeMethod(self, "update_ui_state",
+                                       Qt.QueuedConnection,
+                                       Q_ARG(str, state))
+                return
+            
+            self.update_button_states()
+            
+            if state == "play":
                 if not self.progress_timer.isActive():
                     self.progress_timer.start()
+            elif state == "stop":
+                if self.progress_timer.isActive():
+                    self.progress_timer.stop()
+                self.time_label.setText("剩余时间: 00:00")
+            elif state == "pause":
+                if self.midi_player.paused:
+                    if self.progress_timer.isActive():
+                        self.progress_timer.stop()
+                else:
+                    if not self.progress_timer.isActive():
+                        self.progress_timer.start()
+        except Exception as e:
+            print(f"更新UI状态时出错: {str(e)}")
 
     def stop_playback(self):
         self.midi_player.stop()
@@ -712,6 +716,21 @@ class MainWindow(QMainWindow):
         self.song_list.clear()
         for file in self.midi_files:
             self.song_list.addItem(os.path.basename(file))
+
+    @pyqtSlot()
+    def update_ui_after_playback(self):
+        """在播放开始后更新UI状态"""
+        self.update_ui_state("play")
+
+    @pyqtSlot()
+    def update_ui_after_stop(self):
+        """停止播放后更新UI"""
+        self.update_ui_state("stop")
+
+    @pyqtSlot()
+    def update_ui_after_pause(self):
+        """暂停播放后更新UI"""
+        self.update_ui_state("pause")
 
 # 建议创建一个统一的按钮状态管理类
 class ButtonStateManager:

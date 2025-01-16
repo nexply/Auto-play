@@ -3,11 +3,19 @@ import time
 import threading
 import keyboard
 import mido
-import win32gui
 import ctypes
 from keyboard_mapping import NOTE_TO_KEY
 from collections import defaultdict
 import weakref
+
+# 延迟导入 win32gui
+def get_win32gui():
+    try:
+        import win32gui
+        return win32gui
+    except ImportError:
+        print("警告: 无法导入 win32gui，窗口检测功能将不可用")
+        return None
 
 def is_admin():
     """检查是否具有管理员权限"""
@@ -26,6 +34,7 @@ def check_admin_rights():
 
 class MidiPlayer:
     def __init__(self):
+        self._win32gui = get_win32gui()
         # 检查管理员权限
         if not check_admin_rights():
             raise PermissionError("需要管理员权限才能运行此工具")
@@ -312,7 +321,7 @@ class MidiPlayer:
     def _find_game_window(self):
         """查找游戏窗口"""
         try:
-            hwnd = win32gui.FindWindow(None, self.target_window_name)
+            hwnd = self._win32gui.FindWindow(None, self.target_window_name)
             if hwnd:
                 return hwnd
             return None
@@ -326,10 +335,10 @@ class MidiPlayer:
             hwnd = self._find_game_window()
             if hwnd:
                 # 确保窗口未最小化
-                if win32gui.IsIconic(hwnd):
-                    win32gui.ShowWindow(hwnd, 9)  # SW_RESTORE
+                if self._win32gui.IsIconic(hwnd):
+                    self._win32gui.ShowWindow(hwnd, 9)  # SW_RESTORE
                 # 将窗口置于前台
-                win32gui.SetForegroundWindow(hwnd)
+                self._win32gui.SetForegroundWindow(hwnd)
                 return True
             return False
         except Exception as e:
@@ -535,8 +544,8 @@ class MidiPlayer:
                 return self.last_window_state
                 
             self.last_window_check = current_time
-            active_window = win32gui.GetForegroundWindow()
-            window_title = win32gui.GetWindowText(active_window)
+            active_window = self._win32gui.GetForegroundWindow()
+            window_title = self._win32gui.GetWindowText(active_window)
             
             # 更新缓存的状态
             self.last_window_state = (window_title == self.target_window_name)

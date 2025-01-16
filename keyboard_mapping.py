@@ -43,10 +43,10 @@ NOTE_TO_KEY = {
     59: 'm',    # 7
 }
 
-# 控制键映射
+# 修改控制键映射为组合键
 CONTROL_KEYS = {
-    'START_PAUSE': '-',  # 开始/暂停
-    'STOP': '=',        # 停止
-    'PREV_SONG': 'up',  # 上一首
-    'NEXT_SONG': 'down' # 下一首
+    'START_PAUSE': 'alt+-',     # Alt + 减号键
+    'STOP': 'alt+=',           # Alt + 等号键
+    'PREV_SONG': 'alt+up',     # Alt + 上箭头键
+    'NEXT_SONG': 'alt+down'    # Alt + 下箭头键
 } 

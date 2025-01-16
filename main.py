@@ -1,5 +1,12 @@
+"""
+MIDI自动演奏程序 - 一个基于PyQt5的MIDI文件播放器，支持选择音轨和键盘控制。
+提供直观的界面来加载、选择和播放MIDI文件，并支持全局快捷键控制。
+"""
+
 import os
 import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import json
 import keyboard
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -16,7 +23,44 @@ import time
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-CONFIG_FILE = "config.json"
+class Config:
+    def __init__(self, filename="config.json"):
+        self.filename = filename
+        self.data = self.load()
+    
+    def load(self):
+        try:
+            if os.path.exists(self.filename):
+                with open(self.filename, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"加载配置文件失败: {str(e)}")
+        return self.get_default_config()
+    
+    def save(self, data):
+        try:
+            with open(self.filename, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存配置文件失败: {str(e)}")
+    
+    @staticmethod
+    def get_default_config():
+        return {
+            'last_directory': '',
+            'stay_on_top': False
+        }
+
+def handle_error(func_name):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                print(f"{func_name}时出错: {str(e)}")
+                # 可以添加通用的错误恢复逻辑
+        return wrapper
+    return decorator
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -25,15 +69,17 @@ class MainWindow(QMainWindow):
         QApplication.setStyle(QStyleFactory.create('Windows'))
         
         self.setWindowTitle("燕云-自动演奏")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(800, 500)
         
         # 设置窗口图标
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.ico')
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         
-        # 加载配置
-        self.config = self.load_config()
+        # 创建配置管理器实例
+        self.config_manager = Config()
+        # 从配置管理器获取配置
+        self.config = self.config_manager.data
         self.last_directory = self.config.get('last_directory', '')
         
         # 添加键盘事件防抖动
@@ -129,35 +175,16 @@ class MainWindow(QMainWindow):
         QApplication.quit()
 
     def load_config(self):
-        """加载配置文件"""
-        try:
-            if os.path.exists(CONFIG_FILE):
-                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            else:
-                # 如果配置文件不存在，创建默认配置
-                default_config = {
-                    'last_directory': '',
-                    'stay_on_top': False
-                }
-                with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(default_config, f, ensure_ascii=False, indent=2)
-                return default_config
-        except Exception as e:
-            print(f"加载配置文件失败: {str(e)}")
-            return {'last_directory': '', 'stay_on_top': False}
+        """返回当前配置"""
+        return self.config_manager.data
 
     def save_config(self):
         """保存配置文件"""
-        try:
-            config = {
-                'last_directory': self.last_directory,
-                'stay_on_top': self.stay_on_top.isChecked()
-            }
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"保存配置文件失败: {str(e)}")
+        config = {
+            'last_directory': self.last_directory,
+            'stay_on_top': self.stay_on_top.isChecked()
+        }
+        self.config_manager.save(config)
 
     def setup_ui(self):
         """设置UI界面"""
@@ -170,7 +197,7 @@ class MainWindow(QMainWindow):
         
         # 左侧布局
         left_widget = QWidget()
-        left_widget.setFixedWidth(300)
+        left_widget.setFixedWidth(400)
         left_layout = QVBoxLayout(left_widget)
         
         # 添加置顶复选框
@@ -248,12 +275,12 @@ class MainWindow(QMainWindow):
         right_layout.addStretch()  # 添加弹性空间
         
         # 添加使用说明
-        usage_label = QLabel("使用说明：\n1. 使用管理员权限启动\n2. 选择MIDI文件\n3. 选择要播放的音轨\n4. 点击播放按钮开始演奏")
+        usage_label = QLabel("注意：工具支持36键模式!\n使用说明：\n1. 使用管理员权限启动\n2. 选择MIDI文件\n3. 选择要播放的音轨\n4. 点击播放按钮开始演奏")
         usage_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 10px; border-radius: 5px; }")
         right_layout.addWidget(usage_label)
         
         # 添加快捷键说明
-        shortcut_label = QLabel("快捷键说明：\n减号键(-) - 播放/暂停\n等号键(=) - 停止播放\n方向键上 - 上一首\n方向键下 - 下一首")
+        shortcut_label = QLabel("快捷键说明：\nAlt + 减号键(-) 播放/暂停\nAlt + 等号键(=) 停止播放\nAlt + 方向键上 上一首\nAlt + 方向键下 下一首")
         shortcut_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 10px; border-radius: 5px; }")
         right_layout.addWidget(shortcut_label)
         
@@ -262,20 +289,22 @@ class MainWindow(QMainWindow):
     def setup_keyboard_hooks(self):
         """设置全局键盘钩子"""
         try:
-            keyboard.on_press_key(CONTROL_KEYS['START_PAUSE'], 
-                                lambda e: self.safe_key_handler(self.pause_playback), 
-                                suppress=True)
-            keyboard.on_press_key(CONTROL_KEYS['STOP'], 
-                                lambda e: self.safe_key_handler(self.stop_playback), 
-                                suppress=True)
-            keyboard.on_press_key(CONTROL_KEYS['PREV_SONG'], 
-                                lambda e: self.safe_key_handler(lambda: self.change_song(-1)), 
-                                suppress=True)
-            keyboard.on_press_key(CONTROL_KEYS['NEXT_SONG'], 
-                                lambda e: self.safe_key_handler(lambda: self.change_song(1)), 
-                                suppress=True)
+            # 使用CONTROL_KEYS中定义的组合键
+            keyboard.add_hotkey(CONTROL_KEYS['START_PAUSE'], 
+                              lambda: self.safe_key_handler(self.pause_playback))
+            keyboard.add_hotkey(CONTROL_KEYS['STOP'], 
+                              lambda: self.safe_key_handler(self.stop_playback))
+            keyboard.add_hotkey(CONTROL_KEYS['PREV_SONG'], 
+                              lambda: self.safe_key_handler(lambda: self.change_song(-1)))
+            keyboard.add_hotkey(CONTROL_KEYS['NEXT_SONG'], 
+                              lambda: self.safe_key_handler(lambda: self.change_song(1)))
         except Exception as e:
             print(f"设置键盘钩子时出错: {str(e)}")
+            # 尝试清理所有热键
+            try:
+                keyboard.unhook_all()
+            except Exception as e:
+                print(f"清理键盘钩子时出错: {str(e)}")
 
     def safe_key_handler(self, func):
         """安全地处理键盘事件，添加防抖动和状态检查"""
@@ -286,27 +315,21 @@ class MainWindow(QMainWindow):
             
             self.last_key_time = current_time
             
-            if self.isVisible():
+            # 确保窗口可见且未最小化
+            if self.isVisible() and not self.isMinimized():
                 func()
                 
         except Exception as e:
             print(f"处理键盘事件时出错: {str(e)}")
 
-    def load_directory(self, dir_path):
-        """加载指定目录的MIDI文件"""
-        self.midi_files = []
+    def _load_midi_files(self, dir_path):
+        """加载指定目录下的所有MIDI文件"""
+        midi_files = []
         for root, _, files in os.walk(dir_path):
             for file in files:
                 if file.lower().endswith(('.mid', '.midi')):
-                    self.midi_files.append(os.path.join(root, file))
-        
-        # 清除搜索框
-        self.search_input.clear()
-        
-        # 显示所有歌曲
-        self.song_list.clear()
-        for file in self.midi_files:
-            self.song_list.addItem(os.path.basename(file))
+                    midi_files.append(os.path.join(root, file))
+        return midi_files
 
     def select_directory(self):
         """选择MIDI文件夹"""
@@ -318,17 +341,9 @@ class MainWindow(QMainWindow):
             )
             
             if dir_path:
-                # 更新最后访问的目录
                 self.last_directory = dir_path
                 self.save_config()
-                
-                # 加载目录中的所有MIDI文件（包括子目录）
-                self.midi_files = []
-                for root, _, files in os.walk(dir_path):
-                    for file in files:
-                        if file.lower().endswith(('.mid', '.midi')):
-                            self.midi_files.append(os.path.join(root, file))
-                
+                self.midi_files = self._load_midi_files(dir_path)
                 # 清空并更新歌曲列表
                 self.song_list.clear()
                 for file in self.midi_files:
@@ -470,30 +485,31 @@ class MainWindow(QMainWindow):
             QMetaObject.invokeMethod(self, "update_ui_after_playback",
                                    Qt.QueuedConnection)
 
-    @pyqtSlot()
-    def update_ui_after_playback(self):
-        """在主线程中更新UI"""
-        # 更新按钮状态
+    @pyqtSlot(str)
+    def update_ui_state(self, state):
+        """统一处理UI状态更新"""
         self.update_button_states()
-        # 启动计时器
-        if not self.progress_timer.isActive():
-            self.progress_timer.start()
+        
+        if state == "play":
+            if not self.progress_timer.isActive():
+                self.progress_timer.start()
+        elif state == "stop":
+            if self.progress_timer.isActive():
+                self.progress_timer.stop()
+            self.time_label.setText("剩余时间: 00:00")
+        elif state == "pause":
+            if self.midi_player.paused:
+                if self.progress_timer.isActive():
+                    self.progress_timer.stop()
+            else:
+                if not self.progress_timer.isActive():
+                    self.progress_timer.start()
 
     def stop_playback(self):
         self.midi_player.stop()
         # 使用 QMetaObject.invokeMethod 在主线程中更新 UI
         QMetaObject.invokeMethod(self, "update_ui_after_stop",
                                Qt.QueuedConnection)
-
-    @pyqtSlot()
-    def update_ui_after_stop(self):
-        """在主线程中更新UI"""
-        # 更新按钮状态
-        self.update_button_states()
-        # 停止计时器
-        if self.progress_timer.isActive():
-            self.progress_timer.stop()
-        self.time_label.setText("剩余时间: 00:00")
 
     def pause_playback(self):
         """处理播放/暂停"""
@@ -509,18 +525,6 @@ class MainWindow(QMainWindow):
                     self.start_playback()
         except Exception as e:
             print(f"播放/暂停操作时出错: {str(e)}")
-
-    @pyqtSlot()
-    def update_ui_after_pause(self):
-        """在主线程中更新UI"""
-        # 更新按钮状态
-        self.update_button_states()
-        if self.midi_player.paused:
-            if self.progress_timer.isActive():
-                self.progress_timer.stop()
-        else:
-            if not self.progress_timer.isActive():
-                self.progress_timer.start()
 
     def change_song(self, delta):
         """切换歌曲"""
@@ -624,35 +628,32 @@ class MainWindow(QMainWindow):
             self.tracks_list.setCurrentRow(0)
             self.midi_player.set_track(None)
 
+    @handle_error("过滤歌曲")
     def filter_songs(self, text):
         """根据搜索文本过滤歌曲列表"""
-        try:
-            search_text = text.lower()
-            self.song_list.clear()
-            
-            if not search_text:
-                # 如果搜索框为空，显示所有歌曲
-                for file in self.midi_files:
+        search_text = text.lower()
+        self.song_list.clear()
+        
+        if not search_text:
+            # 如果搜索框为空，显示所有歌曲
+            for file in self.midi_files:
+                self.song_list.addItem(os.path.basename(file))
+        else:
+            # 否则显示匹配的歌曲
+            for file in self.midi_files:
+                filename = os.path.basename(file).lower()
+                if search_text in filename:
                     self.song_list.addItem(os.path.basename(file))
-            else:
-                # 否则显示匹配的歌曲
-                for file in self.midi_files:
-                    filename = os.path.basename(file).lower()
-                    if search_text in filename:
-                        self.song_list.addItem(os.path.basename(file))
-            
-            # 如果之前有选中的歌曲，尝试重新选中
-            if self.current_index >= 0 and self.current_index < len(self.midi_files):
-                current_file = os.path.basename(self.midi_files[self.current_index])
-                # 查找当前歌曲在过滤后列表中的位置
-                for i in range(self.song_list.count()):
-                    if self.song_list.item(i).text() == current_file:
-                        self.song_list.setCurrentRow(i)
-                        break
+        
+        # 如果之前有选中的歌曲，尝试重新选中
+        if self.current_index >= 0 and self.current_index < len(self.midi_files):
+            current_file = os.path.basename(self.midi_files[self.current_index])
+            # 查找当前歌曲在过滤后列表中的位置
+            for i in range(self.song_list.count()):
+                if self.song_list.item(i).text() == current_file:
+                    self.song_list.setCurrentRow(i)
+                    break
                         
-        except Exception as e:
-            print(f"过滤歌曲时出错: {str(e)}")
-
     def clear_search(self):
         """清除搜索框并显示所有歌曲"""
         self.search_input.clear()
@@ -666,16 +667,87 @@ class MainWindow(QMainWindow):
             self.setWindowFlags(self.windowFlags() & ~Qt.WindowStaysOnTopHint)
         self.show()  # 需要重新显示窗口以应用更改
 
-    def select_file(self):
-        """保留此方法以保持兼容性，但改为调用select_directory"""
-        self.select_directory()
-
     def toggle_play(self):
         """切换播放/暂停状态"""
         if not self.midi_player.playing:
             self.start_playback()
         else:
             self.pause_playback()
+
+    def keyPressEvent(self, event):
+        if event.modifiers() & Qt.AltModifier:  # 检查是否按下 Alt 键
+            if event.key() == Qt.Key_Minus:  # 减号键
+                self.pause_playback()
+            elif event.key() == Qt.Key_Equal:  # 等号键
+                self.stop_playback()
+            elif event.key() == Qt.Key_Up:  # 上箭头
+                self.change_song(-1)
+            elif event.key() == Qt.Key_Down:  # 下箭头
+                self.change_song(1)
+
+    def update_ui(self, update_type):
+        """统一处理UI更新"""
+        if update_type == "playback":
+            self.update_button_states()
+            if not self.progress_timer.isActive():
+                self.progress_timer.start()
+        elif update_type == "stop":
+            self.update_button_states()
+            if self.progress_timer.isActive():
+                self.progress_timer.stop()
+            self.time_label.setText("剩余时间: 00:00")
+        # ... 其他更新类型 ...
+
+    def load_directory(self, dir_path):
+        """加载指定目录的MIDI文件"""
+        self.midi_files = self._load_midi_files(dir_path)
+        self.search_input.clear()
+        self.update_song_list()
+
+    def update_song_list(self):
+        """更新歌曲列表显示"""
+        self.song_list.clear()
+        for file in self.midi_files:
+            self.song_list.addItem(os.path.basename(file))
+
+# 建议创建一个统一的按钮状态管理类
+class ButtonStateManager:
+    def __init__(self, play_button, pause_button, stop_button):
+        self.play_button = play_button
+        self.pause_button = pause_button
+        self.stop_button = stop_button
+        self.default_style = """
+            QPushButton {
+                background-color: #ffffff;
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                padding: 5px 15px;
+                min-width: 80px;
+                color: #333333;
+            }
+        """
+        self.active_style = """
+            QPushButton {
+                background-color: #5cb85c;
+                border: 1px solid #4cae4c;
+                border-radius: 4px;
+                padding: 5px 15px;
+                min-width: 80px;
+                color: white;
+            }
+        """
+    
+    def update_states(self, playing, paused):
+        self.reset_all()
+        if playing:
+            if paused:
+                self.pause_button.setStyleSheet(self.active_style)
+            else:
+                self.play_button.setStyleSheet(self.active_style)
+    
+    def reset_all(self):
+        for button in [self.play_button, self.pause_button, self.stop_button]:
+            button.setStyleSheet(self.default_style)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

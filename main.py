@@ -23,6 +23,9 @@ import time
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+# 在主程序中添加或更新版本号
+VERSION = "1.0.1"
+
 class Config:
     def __init__(self, filename="config.json"):
         self.filename = filename
@@ -68,7 +71,7 @@ class MainWindow(QMainWindow):
         # 设置Windows 10风格
         QApplication.setStyle(QStyleFactory.create('Windows'))
         
-        self.setWindowTitle("燕云-自动演奏")
+        self.setWindowTitle(f"燕云-自动演奏by木木睡没-{VERSION}")
         self.setMinimumSize(800, 500)
         
         # 设置窗口图标

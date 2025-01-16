@@ -117,3 +117,9 @@ python build.py
 - [PyQt5](https://www.riverbankcomputing.com/software/pyqt/) - GUI框架
 - [mido](https://mido.readthedocs.io/) - MIDI文件处理
 - [keyboard](https://github.com/boppreh/keyboard) - 键盘控制 
+
+## 版本历史
+- v1.0.1 - 2024-03-XX
+  - 添加窗口置顶功能
+  - 优化性能和内存使用
+  - 修复已知问题 

@@ -7,8 +7,8 @@ import winreg
 def check_dll_registration():
     """检查 PyWin32 DLL 是否正确注册"""
     try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Python\PythonCore", 0, winreg.KEY_READ) as key:
-            print("Python 注册表项存在")
+        winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Python\PythonCore", 0, winreg.KEY_READ)
+        print("Python 注册表项存在")
     except WindowsError:
         print("警告: Python 注册表项不存在")
 

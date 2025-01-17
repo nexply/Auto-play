@@ -21,7 +21,7 @@ def is_admin():
     """检查是否具有管理员权限"""
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
-    except:
+    except OSError:
         return False
 
 def check_admin_rights():
@@ -215,7 +215,6 @@ class MidiPlayer:
         try:
             self.tracks_info = []
             all_notes = []
-            note_frequency = defaultdict(int)
             
             # 首先收集所有音符信息
             for i, track in enumerate(mid.tracks):
@@ -278,7 +277,7 @@ class MidiPlayer:
                     # 如果成功解码并且结果看起来是有效的
                     if decoded and not any(ord(c) < 32 for c in decoded):
                         return decoded
-                except:
+                except UnicodeDecodeError:  # 替换裸异常为具体异常类型
                     continue
         elif isinstance(name, str):
             return name
@@ -524,7 +523,7 @@ class MidiPlayer:
             if was_playing and self.play_thread and self.play_thread.is_alive():
                 try:
                     self.play_thread.join(timeout=0.5)
-                except:
+                except TimeoutError:  # 替换裸异常为具体异常类型
                     pass
             
             # 清理缓存

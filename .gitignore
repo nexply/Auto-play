@@ -34,4 +34,5 @@ dist/
 
 # 项目特定
 config.json
-*.log 
+*.log
+_temp_preview_*.mid 

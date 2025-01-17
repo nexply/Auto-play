@@ -11,14 +11,15 @@ import json
 import keyboard
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                            QHBoxLayout, QPushButton, QLabel, QFileDialog,
-                           QListWidget, QStyle, QStyleFactory, QLineEdit, QComboBox, QCheckBox)
+                           QListWidget, QStyleFactory, QLineEdit, QCheckBox)
 from PyQt5.QtCore import Qt, QTimer, QMetaObject, Q_ARG, pyqtSlot, QThread
-from PyQt5.QtGui import QPalette, QColor, QIcon
+from PyQt5.QtGui import QIcon
 from midi_player import MidiPlayer
 from keyboard_mapping import CONTROL_KEYS
 import mido
 import time
 import pygame.mixer
+import threading
 
 # 忽略废弃警告
 import warnings
@@ -73,7 +74,7 @@ class MainWindow(QMainWindow):
         QApplication.setStyle(QStyleFactory.create('Windows'))
         
         self.setWindowTitle(f"燕云-自动演奏by木木睡没-{VERSION}")
-        self.setMinimumSize(800, 500)
+        self.setMinimumSize(650, 550)
         
         # 设置窗口图标
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.ico')
@@ -172,8 +173,8 @@ class MainWindow(QMainWindow):
         # 清理pygame
         try:
             pygame.mixer.quit()
-        except:
-            pass
+        except Exception as e:
+            print(f"清理pygame时出错: {e}")
         
         # 停止播放
         if self.midi_player.playing:
@@ -232,7 +233,7 @@ class MainWindow(QMainWindow):
         
         # 左侧布局
         left_widget = QWidget()
-        left_widget.setFixedWidth(400)
+        left_widget.setFixedWidth(260)
         left_layout = QVBoxLayout(left_widget)
         
         # 添加置顶复选框
@@ -422,8 +423,11 @@ class MainWindow(QMainWindow):
                 try:
                     # 加载MIDI文件并分析音轨
                     mid = mido.MidiFile(self.midi_files[index])
+                    # 先分析音轨信息
                     self.midi_player.analyze_tracks(mid)
+                    # 然后更新音轨列表显示
                     self.update_tracks_list()
+                    
                 except (EOFError, OSError, ValueError) as e:
                     print(f"MIDI文件损坏或格式不正确: {str(e)}")
                     # 从列表中移除损坏的文件
@@ -434,23 +438,16 @@ class MainWindow(QMainWindow):
                     # 清空音轨列表
                     self.tracks_list.clear()
                     self.tracks_list.addItem("◆ 全部音轨")
-                except Exception as e:
-                    print(f"加载MIDI文件时出错: {str(e)}")
-                    # 清空音轨列表
-                    self.tracks_list.clear()
-                    self.tracks_list.addItem("◆ 全部音轨")
                     
                 # 启用播放和停止按钮
                 self.play_pause_button.setEnabled(True)
                 self.stop_button.setEnabled(True)
-                
-                # 启用预览按钮
                 self.preview_button.setEnabled(True)
                 
                 # 如果正在预览，停止预览
                 if self.is_previewing:
                     self.stop_preview()
-                
+                    
         except Exception as e:
             print(f"选择歌曲时出错: {str(e)}")
             self.current_index = -1
@@ -513,14 +510,26 @@ class MainWindow(QMainWindow):
             print(f"更新按钮状态时出错: {str(e)}")
 
     def start_playback(self):
-        """开始播放"""
-        if self.current_index >= 0:
-            # 先启动计时器（在主线程）
-            if not self.progress_timer.isActive():
-                self.progress_timer.start()
-            # 然后开始播放
-            self.midi_player.play_file(self.midi_files[self.current_index])
-            self.update_ui_state("play")
+        """开始播放MIDI文件"""
+        try:
+            if self.current_index < 0 or not self.midi_files:
+                return
+            
+            current_file = self.midi_files[self.current_index]
+            current_row = self.tracks_list.currentRow()
+            
+            # 启动播放线程
+            self.play_thread = threading.Thread(
+                target=self.midi_player.play_midi,
+                args=(current_file, current_row)
+            )
+            self.play_thread.start()
+            
+            # 更新UI状态
+            self.update_ui("playback")
+            
+        except Exception as e:
+            print(f"开始播放时出错: {str(e)}")
 
     @pyqtSlot(str)
     def update_ui_state(self, state):
@@ -617,21 +626,59 @@ class MainWindow(QMainWindow):
         try:
             self.tracks_list.clear()
             
-            # 添加"全部音轨"选项
-            self.tracks_list.addItem("◆ 全部音轨")
-            
             # 检查是否有可用的音轨信息
-            if hasattr(self.midi_player, 'tracks_info') and self.midi_player.tracks_info:
-                # 添加各个音轨信息
-                for track in self.midi_player.tracks_info:
-                    if 'name' in track and 'notes_count' in track:
-                        track_info = f"◇ {track['name']} [音符: {track['notes_count']}]"
-                        self.tracks_list.addItem(track_info)
+            if not hasattr(self.midi_player, 'tracks_info') or not self.midi_player.tracks_info:
+                self.tracks_list.addItem("◆ 全部音轨")
+                return
+            
+            # 首先计算所有音轨的总体信息
+            total_notes = 0
+            total_playable = 0
+            min_note = float('inf')
+            max_note = float('-inf')
+            
+            for track in self.midi_player.tracks_info:
+                if 'notes' in track:
+                    track_notes = track['notes']
+                    if track_notes:  # 确保有音符
+                        total_notes += len(track_notes)
+                        min_note = min(min_note, min(track_notes))
+                        max_note = max(max_note, max(track_notes))
+                        playable_notes = sum(1 for note in track_notes 
+                                           if 36 <= (note + self.midi_player.note_offset) <= 96)
+                        total_playable += playable_notes
+            
+            # 添加全部音轨选项，包含详细信息
+            if min_note != float('inf'):
+                adjusted_min = min_note + self.midi_player.note_offset
+                adjusted_max = max_note + self.midi_player.note_offset
+                all_tracks_text = (f"◆ 全部音轨 [原始范围: {min_note}-{max_note}, "
+                                 f"调整后: {adjusted_min}-{adjusted_max}, "
+                                 f"可播放: {total_playable}/{total_notes}]")
+            else:
+                all_tracks_text = "◆ 全部音轨"
+            self.tracks_list.addItem(all_tracks_text)
+            
+            # 添加各个音轨的详细信息
+            for i, track in enumerate(self.midi_player.tracks_info):
+                if 'notes' in track and track['notes']:
+                    track_notes = track['notes']
+                    min_note = min(track_notes)
+                    max_note = max(track_notes)
+                    adjusted_min = min_note + self.midi_player.note_offset
+                    adjusted_max = max_note + self.midi_player.note_offset
+                    playable_notes = sum(1 for note in track_notes 
+                                       if 36 <= (note + self.midi_player.note_offset) <= 96)
+                    track_text = (f"◇ 音轨 {i} [原始范围: {min_note}-{max_note}, "
+                                f"调整后: {adjusted_min}-{adjusted_max}, "
+                                f"可播放: {playable_notes}/{len(track_notes)}]")
+                    self.tracks_list.addItem(track_text)
             
             # 默认选择全部音轨
-            self.tracks_list.setCurrentRow(0)
-            self.midi_player.set_track(None)
-            
+            if self.tracks_list.count() > 0:
+                self.tracks_list.setCurrentRow(0)
+                self.midi_player.set_track(None)
+                
         except Exception as e:
             print(f"更新音轨列表时出错: {str(e)}")
             # 出错时重置列表
@@ -668,7 +715,12 @@ class MainWindow(QMainWindow):
             if self.midi_player.playing:
                 self.stop_playback()
                 self.start_playback()
-                
+            
+            # 如果正在预览，重新开始预览
+            if self.is_previewing:
+                self.stop_preview()
+                self.start_preview()
+            
         except Exception as e:
             print(f"选择音轨时出错: {str(e)}")
             # 发生错误时重置为全部音轨
@@ -797,24 +849,106 @@ class MainWindow(QMainWindow):
             pygame.mixer.music.stop()
             
             try:
-                # 加载并播放MIDI文件
-                pygame.mixer.music.load(current_file)
-                pygame.mixer.music.play()
+                # 获取当前选中的音轨
+                current_row = self.tracks_list.currentRow()
+                if current_row < 0:
+                    return
                 
-                # 更新状态和按钮
-                self.is_previewing = True
-                self.preview_button.setText("停止预览")
-                self.preview_button.setStyleSheet("""
-                    QPushButton {
-                        background-color: #d9534f;
-                        color: white;
-                        border: 1px solid #d43f3a;
-                    }
-                    QPushButton:hover {
-                        background-color: #c9302c;
-                        border-color: #ac2925;
-                    }
-                """)
+                # 创建临时MIDI文件用于预览
+                mid = mido.MidiFile(current_file)
+                preview_mid = mido.MidiFile()
+                preview_mid.ticks_per_beat = mid.ticks_per_beat
+                
+                # 创建一个包含所有控制消息的轨道
+                control_track = mido.MidiTrack()
+                
+                # 如果选择"全部音轨"（索引0），则添加所有音轨
+                if current_row == 0:
+                    # 首先收集所有控制消息
+                    for track in mid.tracks:
+                        for msg in track:
+                            # 复制所有控制类消息到控制轨道
+                            if msg.type in ['set_tempo', 'time_signature', 'key_signature', 
+                                          'program_change', 'control_change']:
+                                control_track.append(msg.copy())
+                    
+                    # 添加控制轨道
+                    preview_mid.tracks.append(control_track)
+                    
+                    # 然后添加所有音轨的音符（应用音高调整）
+                    for track in mid.tracks:
+                        track_copy = mido.MidiTrack()
+                        for msg in track:
+                            if msg.type == 'note_on' or msg.type == 'note_off':
+                                msg_copy = msg.copy()
+                                # 只对 note_on 和 note_off 消息调整音高
+                                adjusted_note = self.midi_player._adjust_note(msg.note)
+                                if self.midi_player.PLAYABLE_MIN <= adjusted_note <= self.midi_player.PLAYABLE_MAX:
+                                    msg_copy.note = adjusted_note
+                                    track_copy.append(msg_copy)
+                        if len(track_copy) > 0:  # 只添加包含音符的音轨
+                            preview_mid.tracks.append(track_copy)
+                else:
+                    # 否则只添加选中的音轨
+                    track_index = current_row - 1  # 减1是因为第一项是"全部音轨"
+                    if 0 <= track_index < len(mid.tracks):
+                        # 首先添加原始轨道的控制消息
+                        for msg in mid.tracks[track_index]:
+                            if msg.type in ['set_tempo', 'time_signature', 'key_signature', 
+                                          'program_change', 'control_change']:
+                                control_track.append(msg.copy())
+                        preview_mid.tracks.append(control_track)
+                        
+                        # 然后添加音符消息（应用音高调整）
+                        track_copy = mido.MidiTrack()
+                        for msg in mid.tracks[track_index]:
+                            if msg.type == 'note_on' or msg.type == 'note_off':
+                                msg_copy = msg.copy()
+                                # 只对 note_on 和 note_off 消息调整音高
+                                adjusted_note = self.midi_player._adjust_note(msg.note)
+                                if self.midi_player.PLAYABLE_MIN <= adjusted_note <= self.midi_player.PLAYABLE_MAX:
+                                    msg_copy.note = adjusted_note
+                                    track_copy.append(msg_copy)
+                        if len(track_copy) > 0:
+                            preview_mid.tracks.append(track_copy)
+                
+                # 确保至少有一个音轨
+                if len(preview_mid.tracks) < 1:
+                    print("没有找到可播放的音轨")
+                    return
+                
+                # 创建临时文件
+                temp_dir = os.path.dirname(current_file)
+                if not os.path.exists(temp_dir):
+                    temp_dir = os.path.dirname(os.path.abspath(__file__))
+                temp_file = os.path.join(temp_dir, f"_temp_preview_{os.path.basename(current_file)}")
+                
+                try:
+                    preview_mid.save(temp_file)
+                    pygame.mixer.music.load(temp_file)
+                    pygame.mixer.music.play()
+                    
+                    # 更新状态和按钮
+                    self.is_previewing = True
+                    self.preview_button.setText("停止预览")
+                    self.preview_button.setStyleSheet("""
+                        QPushButton {
+                            background-color: #d9534f;
+                            color: white;
+                            border: 1px solid #d43f3a;
+                        }
+                        QPushButton:hover {
+                            background-color: #c9302c;
+                            border-color: #ac2925;
+                        }
+                    """)
+                finally:
+                    # 确保在加载后删除临时文件
+                    try:
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                    except Exception as e:
+                        print(f"删除临时文件时出错: {str(e)}")
                 
             except Exception as e:
                 print(f"预览MIDI文件时出错: {str(e)}")
@@ -833,6 +967,66 @@ class MainWindow(QMainWindow):
             self.preview_button.setStyleSheet("")
         except Exception as e:
             print(f"停止预览时出错: {str(e)}")
+
+    def load_tracks(self, midi_file):
+        """加载MIDI文件的音轨信息"""
+        try:
+            self.tracks_list.clear()
+            mid = mido.MidiFile(midi_file)
+            
+            # 添加"全部音轨"选项
+            all_notes = []  # 存储所有音轨的所有音符事件
+            track_notes_dict = {}  # 用字典存储每个音轨的音符信息
+            
+            # 首先统计所有音轨的音符信息
+            for i, track in enumerate(mid.tracks):
+                track_notes = []  # 存储当前音轨的所有音符事件（包括重复音符）
+                
+                for msg in track:
+                    if msg.type == 'note_on' and msg.velocity > 0:  # 只统计 note_on 事件
+                        track_notes.append(msg.note)
+                        all_notes.append(msg.note)
+            
+                if track_notes:  # 只处理包含音符的音轨
+                    track_notes_dict[i] = track_notes
+            
+            # 计算全部音轨的统计信息
+            if all_notes:  # 使用所有音符事件
+                min_note = min(all_notes)
+                max_note = max(all_notes)
+                total_notes = len(all_notes)  # 所有音符事件的总数
+                playable_notes = sum(1 for note in all_notes 
+                                   if 36 <= (note + self.midi_player.note_offset) <= 96)
+                
+                # 添加全部音轨选项
+                adjusted_min = min_note + self.midi_player.note_offset
+                adjusted_max = max_note + self.midi_player.note_offset
+                all_tracks_text = (f"全部音轨 [原始范围: {min_note}-{max_note}, "
+                                 f"调整后: {adjusted_min}-{adjusted_max}, "
+                                 f"可播放: {playable_notes}/{total_notes}]")
+                self.tracks_list.addItem(all_tracks_text)
+            
+            # 添加单个音轨
+            for i, track_notes in track_notes_dict.items():
+                if track_notes:  # 确保音轨有音符
+                    min_note = min(track_notes)
+                    max_note = max(track_notes)
+                    total_notes = len(track_notes)  # 使用所有音符事件的数量
+                    playable_notes = sum(1 for note in track_notes 
+                                       if 36 <= (note + self.midi_player.note_offset) <= 96)
+                    
+                    track_text = (f"音轨 {i} [原始范围: {min_note}-{max_note}, "
+                                f"调整后: {min_note + self.midi_player.note_offset}-"
+                                f"{max_note + self.midi_player.note_offset}, "
+                                f"可播放: {playable_notes}/{total_notes}]")
+                    self.tracks_list.addItem(track_text)
+            
+            # 默认选择第一个音轨
+            if self.tracks_list.count() > 0:
+                self.tracks_list.setCurrentRow(0)
+                
+        except Exception as e:
+            print(f"加载音轨时出错: {str(e)}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

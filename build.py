@@ -1,7 +1,19 @@
 import os
-import sys
 import shutil
+import re
 from PyInstaller.__main__ import run
+
+def get_version():
+    """从main.py中获取版本号"""
+    try:
+        with open('main.py', 'r', encoding='utf-8') as f:
+            content = f.read()
+            match = re.search(r'VERSION\s*=\s*["\']([^"\']+)["\']', content)
+            if match:
+                return match.group(1)
+    except Exception as e:
+        print(f"读取版本号时出错: {str(e)}")
+    return "1.0.0"  # 默认版本号
 
 def clean_build():
     """清理构建文件夹"""
@@ -21,30 +33,33 @@ def clean_build():
 
 def build_exe():
     """构建exe文件"""
+    # 获取版本号和设置输出目录
+    version = get_version()
+    output_dir = "dist/yyslsAuto-play"
+    exe_name = f"燕云自动演奏_v{version}"
+    
     # 获取当前脚本所在目录
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # 定义图标路径
     icon_path = os.path.join(current_dir, 'icon.ico')
+    runtime_hook = os.path.join(current_dir, 'runtime_hook.py')
     
     # 确保runtime_hook.py存在
-    runtime_hook = os.path.join(current_dir, 'runtime_hook.py')
     if not os.path.exists(runtime_hook):
         print("错误: 未找到 runtime_hook.py")
         return False
     
     # PyInstaller 参数
     args = [
-        'main.py',  # 主程序文件
-        '--name=燕云自动演奏',  # 输出文件名
-        '--onefile',  # 打包成单个文件
-        '--windowed',  # 使用 GUI 模式
-        f'--icon={icon_path}',  # 设置图标
-        '--clean',  # 清理临时文件
-        f'--runtime-hook={runtime_hook}',  # 运行时钩子
-        '--add-data=icon.ico;.',  # 添加图标文件
-        '--uac-admin',  # 请求管理员权限
-        '--hidden-import=win32gui',  # 添加隐式导入
+        'main.py',
+        f'--name={exe_name}',  # 输出文件名包含版本号
+        '--onefile',
+        '--windowed',
+        f'--icon={icon_path}',
+        '--clean',
+        f'--runtime-hook={runtime_hook}',
+        '--add-data=icon.ico;.',
+        '--uac-admin',
+        '--hidden-import=win32gui',
         '--hidden-import=win32con',
         '--hidden-import=keyboard',
         '--hidden-import=mido',
@@ -54,25 +69,46 @@ def build_exe():
         '--hidden-import=PyQt5.QtCore',
         '--hidden-import=PyQt5.QtGui',
         '--hidden-import=PyQt5.QtWidgets',
-        # 排除一些不需要的模块以减小文件大小
+        '--hidden-import=pygame',
+        '--hidden-import=pygame.mixer',
+        '--hidden-import=pygame._sdl2',
+        '--hidden-import=pygame._sdl2.audio',
+        '--hidden-import=pygame.mixer_music',
         '--exclude-module=matplotlib',
         '--exclude-module=numpy',
         '--exclude-module=pandas',
         '--exclude-module=scipy',
         '--exclude-module=PIL',
+        f'--distpath={output_dir}'  # 指定输出目录
     ]
     
     try:
         # 清理旧的构建文件
         clean_build()
         
-        print("开始构建...")
+        print(f"开始构建版本 {version}...")
         run(args)
         
         # 检查构建结果
-        exe_path = os.path.join('dist', '燕云自动演奏.exe')
+        exe_path = os.path.join(output_dir, f"{exe_name}.exe")
         if os.path.exists(exe_path):
-            print(f"\n构建成功！exe文件位置: {exe_path}")
+            # 复制必要文件到输出目录
+            if os.path.exists('README.md'):
+                shutil.copy2('README.md', output_dir)
+            if os.path.exists('LICENSE'):
+                shutil.copy2('LICENSE', output_dir)
+                
+            # 创建zip文件
+            zip_name = f"yyslsAuto-play_{version}.zip"
+            shutil.make_archive(
+                os.path.join('dist', f"yyslsAuto-play_{version}"),
+                'zip',
+                output_dir
+            )
+            
+            print("\n构建成功！")
+            print(f"exe文件位置: {exe_path}")
+            print(f"zip文件位置: dist/{zip_name}")
             return True
         else:
             print("\n构建失败：未找到输出文件")
@@ -85,7 +121,7 @@ def build_exe():
 if __name__ == '__main__':
     if build_exe():
         print("\n提示：")
-        print("1. exe文件在 dist 目录中")
+        print("1. exe文件在 dist/yyslsAuto-play 目录中")
         print("2. 请确保以管理员身份运行程序")
         print("3. 首次运行可能需要等待几秒钟")
     else:

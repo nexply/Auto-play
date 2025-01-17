@@ -76,9 +76,18 @@ class MidiPlayer:
         self._cached_mid = None  # 缓存当前MIDI文件对象
         
         # 性能优化：预计算的常量
-        self.PLAYABLE_MIN = 48  # 最低音（低音1）
-        self.PLAYABLE_MAX = 83  # 最高音（高音7）
+        self.PLAYABLE_MIN = 36  # 最低音（C2）
+        self.PLAYABLE_MAX = 96  # 最高音（C7）
         self.PLAYABLE_RANGE = self.PLAYABLE_MAX - self.PLAYABLE_MIN
+        
+        # 添加音符映射范围
+        self.NOTE_RANGES = [
+            (36, 47),  # 低音区域 C2-B2
+            (48, 59),  # 中低音区域 C3-B3
+            (60, 71),  # 中音区域 C4-B4
+            (72, 83),  # 中高音区域 C5-B5
+            (84, 96)   # 高音区域 C6-C7
+        ]
 
     def get_current_time(self):
         """获取当前播放时间（秒）"""
@@ -202,61 +211,61 @@ class MidiPlayer:
             self._pressed_keys.clear()
 
     def analyze_tracks(self, mid):
-        """分析MIDI文件的音轨信息并计算最佳音高偏移"""
+        """分析MIDI文件的音轨信息"""
         try:
             self.tracks_info = []
             all_notes = []
             note_frequency = defaultdict(int)
-            channel_info = {}
             
-            # 使用更高效的数据结构
-            channel_notes = defaultdict(int)
-            
-            # 一次性收集所有信息
-            for track in mid.tracks:
+            # 首先收集所有音符信息
+            for i, track in enumerate(mid.tracks):
+                track_info = {
+                    'index': i,
+                    'channel': None,
+                    'notes': [],      # 使用列表存储所有音符（包括重复的）
+                    'name': None,
+                    'program': None,
+                    'has_notes': False,
+                    'messages': []    # 存储轨道的所有消息
+                }
+                
+                # 分析轨道消息
                 for msg in track:
-                    if msg.type == 'note_on' and hasattr(msg, 'channel') and msg.velocity > 0:
-                        channel = msg.channel
-                        channel_notes[channel] += 1
-                        all_notes.append(msg.note)
-                        note_frequency[msg.note] += 1
-                    elif msg.type == 'track_name' and hasattr(msg, 'channel'):
-                        try:
-                            track_name = self._decode_track_name(msg.name)
-                            if track_name:
-                                channel = msg.channel
-                                if channel not in channel_info:
-                                    channel_info[channel] = {'name': track_name, 'notes_count': 0}
-                        except:
-                            continue
+                    # 存储所有消息
+                    track_info['messages'].append(msg)
+                    
+                    # 记录音符
+                    if msg.type == 'note_on' and msg.velocity > 0:
+                        track_info['notes'].append(msg.note)
+                        track_info['has_notes'] = True
+                        if msg.channel is not None:
+                            track_info['channel'] = msg.channel
+                    
+                    # 记录乐器类型
+                    elif msg.type == 'program_change':
+                        track_info['program'] = msg.program
+                        if track_info['channel'] is None:
+                            track_info['channel'] = msg.channel
+                    
+                    # 记录轨道名称
+                    elif msg.type == 'track_name':
+                        track_info['name'] = self._decode_track_name(msg.name)
+                
+                # 只添加包含音符的轨道
+                if track_info['has_notes']:
+                    if track_info['channel'] is None:
+                        track_info['channel'] = i
+                    self.tracks_info.append(track_info)
+                    all_notes.extend(track_info['notes'])
             
-            # 合并信息
-            for channel, count in channel_notes.items():
-                name = channel_info.get(channel, {}).get('name', f'音轨 {channel+1}')
-                if count > 0:
-                    self.tracks_info.append({
-                        'channel': channel,
-                        'name': name,
-                        'notes_count': count
-                    })
-            
-            # 如果没有找到任何音轨，添加默认音轨
-            if not self.tracks_info:
-                self.tracks_info.append({
-                    'channel': 0,
-                    'name': '默认音轨',
-                    'notes_count': 0
-                })
-            
-            # 计算最佳偏移量
-            if all_notes:
-                self._calculate_best_offset(all_notes, note_frequency)
+            # 根据音符数量排序轨道
+            self.tracks_info.sort(key=lambda x: len(x['notes']), reverse=True)
             
             return self.tracks_info
             
         except Exception as e:
             print(f"分析音轨时出错: {str(e)}")
-            return [{'channel': 0, 'name': '默认音轨', 'notes_count': 0}]
+            return []
 
     def _decode_track_name(self, name):
         """解码音轨名称"""
@@ -528,12 +537,51 @@ class MidiPlayer:
             self._release_all_keys()
 
     def _adjust_note(self, note):
-        """调整音符音高，保持相对关系"""
-        # 使用缓存
-        cache_key = (note, self.note_offset)
-        if cache_key not in self._note_key_cache:
-            self._note_key_cache[cache_key] = note + self.note_offset
-        return self._note_key_cache[cache_key] 
+        """智能调整音符音高，尽量保持原始音乐的相对关系"""
+        try:
+            # 使用缓存
+            cache_key = (note, self.note_offset)
+            if cache_key in self._note_key_cache:
+                return self._note_key_cache[cache_key]
+
+            adjusted_note = note + self.note_offset
+
+            # 如果音符已经在可播放范围内，直接返回
+            if self.PLAYABLE_MIN <= adjusted_note <= self.PLAYABLE_MAX:
+                self._note_key_cache[cache_key] = adjusted_note
+                return adjusted_note
+
+            # 找到最近的可播放区域
+            best_range = None
+            min_distance = float('inf')
+            
+            for note_range in self.NOTE_RANGES:
+                range_center = (note_range[0] + note_range[1]) / 2
+                distance = abs(adjusted_note - range_center)
+                if distance < min_distance:
+                    min_distance = distance
+                    best_range = note_range
+
+            # 将音符映射到最近的可播放区域
+            if best_range:
+                if adjusted_note < best_range[0]:
+                    adjusted_note = best_range[0] + (adjusted_note % 12)
+                elif adjusted_note > best_range[1]:
+                    adjusted_note = best_range[1] - (11 - (adjusted_note % 12))
+
+                # 确保音符在可播放范围内
+                adjusted_note = max(self.PLAYABLE_MIN, min(adjusted_note, self.PLAYABLE_MAX))
+                
+                # 缓存结果
+                self._note_key_cache[cache_key] = adjusted_note
+                return adjusted_note
+
+            # 如果无法调整，返回原始音符
+            return note
+
+        except Exception as e:
+            print(f"调整音符时出错: {str(e)}")
+            return note
 
     def _check_active_window(self):
         """检查当前活动窗口是否为目标窗口"""
@@ -554,3 +602,68 @@ class MidiPlayer:
         except Exception as e:
             print(f"检查活动窗口时出错: {str(e)}")
             return False 
+
+    def play_track(self, track_info):
+        """播放指定音轨"""
+        try:
+            if not track_info or 'messages' not in track_info:
+                print("无效的音轨信息")
+                return
+            
+            current_time = 0
+            for msg in track_info['messages']:
+                if not self.playing or self.paused:
+                    break
+                    
+                if msg.time > 0:
+                    time.sleep(msg.time)
+                    current_time += msg.time
+                
+                if msg.type == 'note_on' and msg.velocity > 0:
+                    adjusted_note = self._adjust_note(msg.note)
+                    if self.PLAYABLE_MIN <= adjusted_note <= self.PLAYABLE_MAX:
+                        key = NOTE_TO_KEY.get(adjusted_note)
+                        if key:
+                            keyboard.press(key)
+                            self._pressed_keys.add(key)
+                
+                elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                    adjusted_note = self._adjust_note(msg.note)
+                    if self.PLAYABLE_MIN <= adjusted_note <= self.PLAYABLE_MAX:
+                        key = NOTE_TO_KEY.get(adjusted_note)
+                        if key:
+                            keyboard.release(key)
+                            self._pressed_keys.discard(key)
+                            
+        except Exception as e:
+            print(f"播放音轨时出错: {str(e)}")
+            self._release_all_keys()
+
+    def play_midi(self, midi_file, track_index=None):
+        """播放MIDI文件"""
+        try:
+            if not os.path.exists(midi_file):
+                print(f"MIDI文件不存在: {midi_file}")
+                return
+            
+            # 分析MIDI文件
+            mid = mido.MidiFile(midi_file)
+            tracks_info = self.analyze_tracks(mid)
+            
+            if not tracks_info:
+                print("没有找到可播放的音轨")
+                return
+            
+            # 选择要播放的音轨
+            if track_index is None or track_index == 0:  # 播放所有音轨
+                for track in tracks_info:
+                    if self.playing and not self.paused:
+                        self.play_track(track)
+            elif 0 < track_index <= len(tracks_info):  # 播放指定音轨
+                self.play_track(tracks_info[track_index - 1])
+            else:
+                print(f"无效的音轨索引: {track_index}")
+                
+        except Exception as e:
+            print(f"播放MIDI文件时出错: {str(e)}")
+            self.stop() 

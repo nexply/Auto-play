@@ -26,7 +26,7 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # 在主程序中添加或更新版本号
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 
 class Config:
     def __init__(self, filename="config.json"):
@@ -483,7 +483,10 @@ class MainWindow(QMainWindow):
             # 更新播放/暂停按钮状态
             self.play_pause_button.setEnabled(has_file)
             if is_playing:
-                self.play_pause_button.setText("暂停")
+                if is_paused:  # 如果暂停中
+                    self.play_pause_button.setText("继续")
+                else:  # 如果正在播放
+                    self.play_pause_button.setText("暂停")
                 self.play_pause_button.setStyleSheet("""
                     QPushButton {
                         background-color: #f0ad4e;
@@ -495,7 +498,7 @@ class MainWindow(QMainWindow):
                         border-color: #d58512;
                     }
                 """)
-            else:
+            else:  # 如果未播放
                 self.play_pause_button.setText("播放")
                 self.play_pause_button.setStyleSheet("")
             

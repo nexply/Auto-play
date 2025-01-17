@@ -18,6 +18,7 @@ from midi_player import MidiPlayer
 from keyboard_mapping import CONTROL_KEYS
 import mido
 import time
+import pygame.mixer
 
 # 忽略废弃警告
 import warnings
@@ -139,6 +140,14 @@ class MainWindow(QMainWindow):
         self.progress_timer.timeout.connect(self.update_progress)
         self.progress_timer.setInterval(100)  # 每100ms更新一次
         
+        # 初始化pygame mixer
+        try:
+            pygame.mixer.init()
+        except Exception as e:
+            print(f"初始化音频系统失败: {str(e)}")
+        
+        self.is_previewing = False
+        
         self.setup_ui()
         self.setup_keyboard_hooks()
         
@@ -155,9 +164,32 @@ class MainWindow(QMainWindow):
             self.load_directory(self.last_directory)
 
     def closeEvent(self, event):
-        """重写关闭事件，直接退出程序"""
-        self.quit_application()
-        event.accept()
+        """重写关闭事件，确保正确清理资源"""
+        # 停止预览
+        if self.is_previewing:
+            self.stop_preview()
+        
+        # 清理pygame
+        try:
+            pygame.mixer.quit()
+        except:
+            pass
+        
+        # 停止播放
+        if self.midi_player.playing:
+            self.midi_player.stop()
+        
+        # 停止所有计时器
+        self.stop_timers()
+        
+        # 保存配置
+        self.save_config()
+        
+        # 移除所有键盘钩子
+        keyboard.unhook_all()
+        
+        # 退出应用程序
+        QApplication.quit()
 
     def quit_application(self):
         """退出应用程序"""
@@ -251,26 +283,26 @@ class MainWindow(QMainWindow):
         self.time_label.setStyleSheet("QLabel { padding: 5px; }")
         right_layout.addWidget(self.time_label)
         
-        # 控制按钮
+        # 修改控制按钮布局
         control_layout = QHBoxLayout()
         
-        # 播放按钮
-        self.play_button = QPushButton("播放")
-        self.play_button.setEnabled(False)
-        self.play_button.clicked.connect(self.toggle_play)
-        control_layout.addWidget(self.play_button)
-        
-        # 暂停按钮
-        self.pause_button = QPushButton("暂停")
-        self.pause_button.setEnabled(False)
-        self.pause_button.clicked.connect(self.pause_playback)
-        control_layout.addWidget(self.pause_button)
+        # 合并播放/暂停按钮
+        self.play_pause_button = QPushButton("播放")
+        self.play_pause_button.setEnabled(False)
+        self.play_pause_button.clicked.connect(self.toggle_play)
+        control_layout.addWidget(self.play_pause_button)
         
         # 停止按钮
         self.stop_button = QPushButton("停止")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_playback)
         control_layout.addWidget(self.stop_button)
+        
+        # 预览按钮
+        self.preview_button = QPushButton("预览")
+        self.preview_button.setEnabled(False)
+        self.preview_button.clicked.connect(self.toggle_preview)
+        control_layout.addWidget(self.preview_button)
         
         right_layout.addLayout(control_layout)
         
@@ -356,9 +388,20 @@ class MainWindow(QMainWindow):
                 if self.midi_files:
                     self.song_list.setCurrentRow(0)
                     self.current_index = 0
-                    self.play_button.setEnabled(True)
+                    self.play_pause_button.setEnabled(True)
                     self.stop_button.setEnabled(True)
-                    self.pause_button.setEnabled(True)
+                    self.play_pause_button.setText("播放")
+                    self.play_pause_button.setStyleSheet("""
+                        QPushButton {
+                            background-color: #5cb85c;
+                            color: white;
+                            border: 1px solid #4cae4c;
+                        }
+                        QPushButton:hover {
+                            background-color: #449d44;
+                            border-color: #398439;
+                        }
+                    """)
                 
         except Exception as e:
             print(f"选择文件夹时出错: {str(e)}")
@@ -398,9 +441,15 @@ class MainWindow(QMainWindow):
                     self.tracks_list.addItem("◆ 全部音轨")
                     
                 # 启用播放和停止按钮
-                self.play_button.setEnabled(True)
+                self.play_pause_button.setEnabled(True)
                 self.stop_button.setEnabled(True)
-                self.pause_button.setEnabled(True)
+                
+                # 启用预览按钮
+                self.preview_button.setEnabled(True)
+                
+                # 如果正在预览，停止预览
+                if self.is_previewing:
+                    self.stop_preview()
                 
         except Exception as e:
             print(f"选择歌曲时出错: {str(e)}")
@@ -428,49 +477,40 @@ class MainWindow(QMainWindow):
 
     def update_button_states(self):
         """更新按钮状态"""
-        # 定义基础样式
-        base_style = """
-            QPushButton {
-                background-color: #ffffff;
-                border: 1px solid #cccccc;
-                border-radius: 4px;
-                padding: 5px 15px;
-                min-width: 80px;
-                color: #333333;
-            }
-            QPushButton:hover {
-                background-color: #e6e6e6;
-                border-color: #adadad;
-            }
-        """
-        
-        # 定义高亮样式
-        highlight_style = """
-            QPushButton {
-                background-color: #5cb85c;
-                border: 1px solid #4cae4c;
-                border-radius: 4px;
-                padding: 5px 15px;
-                min-width: 80px;
-                color: white;
-            }
-            QPushButton:hover {
-                background-color: #449d44;
-                border-color: #398439;
-            }
-        """
-        
-        # 重置所有按钮样式
-        self.play_button.setStyleSheet(base_style)
-        self.pause_button.setStyleSheet(base_style)
-        self.stop_button.setStyleSheet(base_style)
-
-        # 根据播放状态设置高亮
-        if self.midi_player.playing:
-            if self.midi_player.paused:
-                self.pause_button.setStyleSheet(highlight_style)
+        try:
+            # 修改 has_file 的判断逻辑
+            has_file = self.current_index >= 0 and len(self.midi_files) > 0
+            is_playing = self.midi_player.playing
+            is_paused = self.midi_player.paused
+            
+            # 更新播放/暂停按钮状态
+            self.play_pause_button.setEnabled(has_file)
+            if is_playing:
+                self.play_pause_button.setText("暂停")
+                self.play_pause_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f0ad4e;
+                        color: white;
+                        border: 1px solid #eea236;
+                    }
+                    QPushButton:hover {
+                        background-color: #ec971f;
+                        border-color: #d58512;
+                    }
+                """)
             else:
-                self.play_button.setStyleSheet(highlight_style)
+                self.play_pause_button.setText("播放")
+                self.play_pause_button.setStyleSheet("")
+            
+            # 更新停止按钮状态
+            self.stop_button.setEnabled(is_playing)
+            
+            # 更新预览按钮状态（如果存在）
+            if hasattr(self, 'preview_button'):
+                self.preview_button.setEnabled(has_file and not is_playing)
+            
+        except Exception as e:
+            print(f"更新按钮状态时出错: {str(e)}")
 
     def start_playback(self):
         """开始播放"""
@@ -676,10 +716,13 @@ class MainWindow(QMainWindow):
 
     def toggle_play(self):
         """切换播放/暂停状态"""
-        if not self.midi_player.playing:
-            self.start_playback()
-        else:
-            self.pause_playback()
+        try:
+            if not self.midi_player.playing:
+                self.start_playback()
+            else:
+                self.pause_playback()
+        except Exception as e:
+            print(f"切换播放状态时出错: {str(e)}")
 
     def keyPressEvent(self, event):
         if event.modifiers() & Qt.AltModifier:  # 检查是否按下 Alt 键
@@ -732,44 +775,64 @@ class MainWindow(QMainWindow):
         """暂停播放后更新UI"""
         self.update_ui_state("pause")
 
-# 建议创建一个统一的按钮状态管理类
-class ButtonStateManager:
-    def __init__(self, play_button, pause_button, stop_button):
-        self.play_button = play_button
-        self.pause_button = pause_button
-        self.stop_button = stop_button
-        self.default_style = """
-            QPushButton {
-                background-color: #ffffff;
-                border: 1px solid #cccccc;
-                border-radius: 4px;
-                padding: 5px 15px;
-                min-width: 80px;
-                color: #333333;
-            }
-        """
-        self.active_style = """
-            QPushButton {
-                background-color: #5cb85c;
-                border: 1px solid #4cae4c;
-                border-radius: 4px;
-                padding: 5px 15px;
-                min-width: 80px;
-                color: white;
-            }
-        """
-    
-    def update_states(self, playing, paused):
-        self.reset_all()
-        if playing:
-            if paused:
-                self.pause_button.setStyleSheet(self.active_style)
+    def toggle_preview(self):
+        """切换预览状态"""
+        try:
+            if not self.is_previewing:
+                self.start_preview()
             else:
-                self.play_button.setStyleSheet(self.active_style)
-    
-    def reset_all(self):
-        for button in [self.play_button, self.pause_button, self.stop_button]:
-            button.setStyleSheet(self.default_style)
+                self.stop_preview()
+        except Exception as e:
+            print(f"切换预览状态时出错: {str(e)}")
+
+    def start_preview(self):
+        """开始预览MIDI文件"""
+        try:
+            if self.current_index < 0 or not self.midi_files:
+                return
+            
+            current_file = self.midi_files[self.current_index]
+            
+            # 停止当前播放
+            pygame.mixer.music.stop()
+            
+            try:
+                # 加载并播放MIDI文件
+                pygame.mixer.music.load(current_file)
+                pygame.mixer.music.play()
+                
+                # 更新状态和按钮
+                self.is_previewing = True
+                self.preview_button.setText("停止预览")
+                self.preview_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #d9534f;
+                        color: white;
+                        border: 1px solid #d43f3a;
+                    }
+                    QPushButton:hover {
+                        background-color: #c9302c;
+                        border-color: #ac2925;
+                    }
+                """)
+                
+            except Exception as e:
+                print(f"预览MIDI文件时出错: {str(e)}")
+                self.stop_preview()
+                
+        except Exception as e:
+            print(f"开始预览时出错: {str(e)}")
+            self.stop_preview()
+
+    def stop_preview(self):
+        """停止预览"""
+        try:
+            pygame.mixer.music.stop()
+            self.is_previewing = False
+            self.preview_button.setText("预览")
+            self.preview_button.setStyleSheet("")
+        except Exception as e:
+            print(f"停止预览时出错: {str(e)}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

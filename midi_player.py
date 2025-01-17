@@ -7,6 +7,7 @@ import ctypes
 from keyboard_mapping import NOTE_TO_KEY
 from collections import defaultdict
 import weakref
+from PyQt5.QtCore import QObject, pyqtSignal
 
 # 延迟导入 win32gui
 def get_win32gui():
@@ -32,8 +33,11 @@ def check_admin_rights():
         return False
     return True
 
-class MidiPlayer:
+class MidiPlayer(QObject):  # 继承QObject以支持信号
+    window_switch_failed = pyqtSignal()  # 添加新信号
+    
     def __init__(self):
+        super().__init__()  # 调用父类初始化
         self._win32gui = get_win32gui()
         # 检查管理员权限
         if not check_admin_rights():
@@ -88,6 +92,13 @@ class MidiPlayer:
             (72, 83),  # 中高音区域 C5-B5
             (84, 96)   # 高音区域 C6-C7
         ]
+        
+        # 添加备用窗口列表
+        self.window_titles = [
+            "燕云十六声",  # 主窗口
+            "新建文本文档",  # 备用窗口1
+        ]
+        self.current_window_index = 0  # 当前使用的窗口索引
 
     def get_current_time(self):
         """获取当前播放时间（秒）"""
@@ -147,47 +158,48 @@ class MidiPlayer:
         """按下键位"""
         try:
             if key not in self._pressed_keys:
-                if '+' in key:  # 处理组合键
+                print(f"按下键位: {key}")
+                if '+' in key:
                     parts = key.split('+')
                     modifier, base_key = parts[0], parts[1]
-                    try:
-                        # 批量处理按键操作
-                        keyboard.press(modifier)
-                        keyboard.press(base_key)
-                        keyboard.release(modifier)
-                        keyboard.release(base_key)
-                    except Exception as e:
-                        print(f"组合键操作出错 {key}: {str(e)}")
-                        return
+                    keyboard.press(modifier)
+                    keyboard.press(base_key)
+                    self._pressed_keys.add(key)
                 else:
-                    try:
-                        keyboard.press(key)
-                    except Exception as e:
-                        print(f"单键操作出错 {key}: {str(e)}")
-                        return
-                self._pressed_keys.add(key)
+                    keyboard.press(key)
+                    self._pressed_keys.add(key)
         except Exception as e:
             print(f"按键处理出错 {key}: {str(e)}")
+            # 确保出错时也释放按键
+            try:
+                if '+' in key:
+                    parts = key.split('+')
+                    keyboard.release(parts[1])
+                    keyboard.release(parts[0])
+                else:
+                    keyboard.release(key)
+            except:
+                pass
+            if key in self._pressed_keys:
+                self._pressed_keys.remove(key)
 
     def _release_key(self, key):
         """释放键位"""
         try:
             if key in self._pressed_keys:
-                if '+' in key:  # 处理组合键
-                    try:
-                        keyboard.release(key.split('+')[1])
-                    except Exception as e:
-                        print(f"组合键释放出错 {key}: {str(e)}")
-                        return
+                print(f"释放键位: {key}")
+                if '+' in key:
+                    parts = key.split('+')
+                    keyboard.release(parts[1])  # 先释放基础键
+                    keyboard.release(parts[0])  # 再释放修饰键
                 else:
-                    try:
-                        keyboard.release(key)
-                    except Exception as e:
-                        print(f"单键释放出错 {key}: {str(e)}")
-                        return
+                    keyboard.release(key)
                 self._pressed_keys.remove(key)
         except Exception as e:
             print(f"释放按键出错 {key}: {str(e)}")
+            # 确保出错时也从集合中移除
+            if key in self._pressed_keys:
+                self._pressed_keys.remove(key)
 
     def _release_all_keys(self):
         """释放所有按下的键位"""
@@ -211,56 +223,28 @@ class MidiPlayer:
             self._pressed_keys.clear()
 
     def analyze_tracks(self, mid):
-        """分析MIDI文件的音轨信息"""
+        """分析MIDI文件的音轨"""
         try:
-            self.tracks_info = []
-            all_notes = []
-            
-            # 首先收集所有音符信息
-            for i, track in enumerate(mid.tracks):
-                track_info = {
-                    'index': i,
-                    'channel': None,
-                    'notes': [],      # 使用列表存储所有音符（包括重复的）
-                    'name': None,
-                    'program': None,
-                    'has_notes': False,
-                    'messages': []    # 存储轨道的所有消息
-                }
+            tracks_info = []
+            for track in mid.tracks:
+                messages = []
+                current_time = 0
                 
-                # 分析轨道消息
                 for msg in track:
-                    # 存储所有消息
-                    track_info['messages'].append(msg)
-                    
-                    # 记录音符
-                    if msg.type == 'note_on' and msg.velocity > 0:
-                        track_info['notes'].append(msg.note)
-                        track_info['has_notes'] = True
-                        if msg.channel is not None:
-                            track_info['channel'] = msg.channel
-                    
-                    # 记录乐器类型
-                    elif msg.type == 'program_change':
-                        track_info['program'] = msg.program
-                        if track_info['channel'] is None:
-                            track_info['channel'] = msg.channel
-                    
-                    # 记录轨道名称
-                    elif msg.type == 'track_name':
-                        track_info['name'] = self._decode_track_name(msg.name)
+                    current_time += msg.time
+                    if msg.type in ['note_on', 'note_off']:
+                        # 创建消息的副本，并设置绝对时间
+                        msg_copy = msg.copy()
+                        msg_copy.time = current_time
+                        messages.append(msg_copy)
                 
-                # 只添加包含音符的轨道
-                if track_info['has_notes']:
-                    if track_info['channel'] is None:
-                        track_info['channel'] = i
-                    self.tracks_info.append(track_info)
-                    all_notes.extend(track_info['notes'])
+                if messages:
+                    tracks_info.append({
+                        'messages': messages,
+                        'channel': None
+                    })
             
-            # 根据音符数量排序轨道
-            self.tracks_info.sort(key=lambda x: len(x['notes']), reverse=True)
-            
-            return self.tracks_info
+            return tracks_info
             
         except Exception as e:
             print(f"分析音轨时出错: {str(e)}")
@@ -338,19 +322,57 @@ class MidiPlayer:
             return None
 
     def _switch_to_game_window(self):
-        """切换到游戏窗口"""
+        """切换到游戏窗口，使用模糊匹配"""
         try:
-            hwnd = self._find_game_window()
-            if hwnd:
-                # 确保窗口未最小化
-                if self._win32gui.IsIconic(hwnd):
-                    self._win32gui.ShowWindow(hwnd, 9)  # SW_RESTORE
-                # 将窗口置于前台
-                self._win32gui.SetForegroundWindow(hwnd)
+            def enum_windows_callback(hwnd, window_list):
+                title = self._win32gui.GetWindowText(hwnd)
+                # 对每个目标标题进行模糊匹配
+                for target_title in self.window_titles:
+                    if target_title.lower() in title.lower():
+                        window_list.append((hwnd, title, target_title))
                 return True
+                
+            window_list = []
+            self._win32gui.EnumWindows(enum_windows_callback, window_list)
+            
+            if not window_list:
+                print("未找到任何匹配的游戏窗口")
+                self.window_switch_failed.emit()  # 发送信号
+                self.playing = False  # 停止播放
+                return False
+                
+            # 尝试切换到当前选择的窗口
+            current_title = self.window_titles[self.current_window_index]
+            for hwnd, title, matched_title in window_list:
+                if matched_title == current_title:
+                    try:
+                        self._win32gui.SetForegroundWindow(hwnd)
+                        self.target_window_name = title  # 更新为实际的窗口标题
+                        return True
+                    except Exception as e:
+                        print(f"切换到窗口 {title} 失败: {str(e)}")
+            
+            # 如果当前选择的窗口不可用，尝试其他窗口
+            for hwnd, title, matched_title in window_list:
+                try:
+                    self._win32gui.SetForegroundWindow(hwnd)
+                    self.current_window_index = self.window_titles.index(matched_title)
+                    self.target_window_name = title
+                    return True
+                except Exception as e:
+                    print(f"切换到窗口 {title} 失败: {str(e)}")
+                    continue
+                
+            # 如果所有窗口都切换失败
+            print("所有目标窗口都无法切换")
+            self.window_switch_failed.emit()  # 发送信号
+            self.playing = False  # 停止播放
             return False
+            
         except Exception as e:
-            print(f"切换窗口时出错: {str(e)}")
+            print(f"切换到游戏窗口时出错: {str(e)}")
+            self.window_switch_failed.emit()  # 发送信号
+            self.playing = False  # 停止播放
             return False
 
     def play_file(self, midi_file):
@@ -466,8 +488,6 @@ class MidiPlayer:
                         if note in NOTE_TO_KEY:
                             if msg.velocity > 0:
                                 self._press_key(NOTE_TO_KEY[note])
-                            else:
-                                self._release_key(NOTE_TO_KEY[note])
                 elif msg.type == 'note_off' and hasattr(msg, 'channel'):
                     if selected_track is None or msg.channel == selected_track:
                         note = self._adjust_note(msg.note)
@@ -485,55 +505,64 @@ class MidiPlayer:
             self.stop()
 
     def pause(self):
-        """暂停或继续播放"""
+        """统一的暂停处理"""
         with self._lock:
             if self.playing:
-                # 如果是自动暂停，不允许手动继续播放，除非窗口已经恢复
-                if self.auto_paused and not self._check_active_window():
-                    print("请切换到游戏窗口后再继续播放")
-                    return
+                was_paused = self.paused
+                self.paused = not was_paused
+                
+                if self.paused:  # 暂停播放
+                    self.pause_time = time.time() * 1000
+                    self._release_all_keys()  # 确保释放所有按键
+                    print("暂停播放")
+                else:  # 继续播放
+                    # 切换到目标窗口
+                    if not self._switch_to_game_window():
+                        print("无法切换到目标窗口，保持暂停状态")
+                        self.paused = True
+                        return False
                     
-                # 如果要继续播放，先检查游戏窗口
-                if self.paused and not self._switch_to_game_window():
-                    print(f"警告: 未找到游戏窗口 '{self.target_window_name}'，请确保游戏已启动")
-                    return
-                    
-                self.paused = not self.paused
-                self.auto_paused = False  # 清除自动暂停标记
-                if not self.paused:
+                    if self.pause_time:
+                        self.total_pause_time += time.time() * 1000 - self.pause_time
                     self.pause_time = 0
+                    print("继续播放")
+                
+                return True
+            return False
 
-    def stop(self):
-        """停止播放"""
+    def resume(self):
+        """恢复播放"""
         try:
-            # 先标记停止状态
+            # 在恢复播放前检查窗口状态
+            if not self._switch_to_game_window():
+                print("无法找到目标窗口，无法恢复播放")
+                self.window_switch_failed.emit()  # 发送窗口切换失败信号
+                return False
+            
             with self._lock:
-                was_playing = self.playing
-                self.playing = False
+                if not self.playing or not self.paused:
+                    return False
+                
                 self.paused = False
-                self.auto_paused = False
-                self.start_time = 0
+                if self.pause_time:
+                    self.total_pause_time += time.time() * 1000 - self.pause_time
                 self.pause_time = 0
-                self.total_pause_time = 0
-            
-            # 释放所有按键
-            self._release_all_keys()
-            
-            # 如果之前在播放，等待线程结束
-            if was_playing and self.play_thread and self.play_thread.is_alive():
-                try:
-                    self.play_thread.join(timeout=0.5)
-                except TimeoutError:  # 替换裸异常为具体异常类型
-                    pass
-            
-            # 清理缓存
-            with self._lock:
-                self._cached_mid = None
-                self._note_key_cache.clear()  # 清除音符缓存
+                self.auto_paused = False
+                return True
             
         except Exception as e:
-            print(f"停止播放时出错: {str(e)}")
+            print(f"恢复播放时出错: {str(e)}")
+            return False
+
+    def stop(self):
+        """统一的停止播放处理"""
+        with self._lock:
+            self.playing = False
+            self.paused = False
+            self.auto_paused = False
+            self.current_file = None
             self._release_all_keys()
+            print("停止播放")
 
     def _adjust_note(self, note):
         """智能调整音符音高，尽量保持原始音乐的相对关系"""
@@ -583,59 +612,90 @@ class MidiPlayer:
             return note
 
     def _check_active_window(self):
-        """检查当前活动窗口是否为目标窗口"""
+        """检查目标窗口是否处于活动状态"""
         try:
-            current_time = time.time()
-            # 使用缓存的状态
-            if current_time - self.last_window_check < self.window_check_interval:
-                return self.last_window_state
-                
-            self.last_window_check = current_time
-            active_window = self._win32gui.GetForegroundWindow()
-            window_title = self._win32gui.GetWindowText(active_window)
+            if not self._win32gui:
+                return True
             
-            # 更新缓存的状态
-            self.last_window_state = (window_title == self.target_window_name)
-            return self.last_window_state
+            active_window = self._win32gui.GetForegroundWindow()
+            active_title = self._win32gui.GetWindowText(active_window).lower()
+            
+            # 检查当前活动窗口是否匹配任何目标窗口
+            for title in self.window_titles:
+                if title.lower() in active_title:
+                    return True
+            
+            return False
             
         except Exception as e:
-            print(f"检查活动窗口时出错: {str(e)}")
-            return False 
+            print(f"检查窗口状态时出错: {str(e)}")
+            return True  # 出错时默认返回True以避免意外暂停
 
     def play_track(self, track_info):
-        """播放指定音轨"""
+        """播放单个音轨"""
         try:
-            if not track_info or 'messages' not in track_info:
-                print("无效的音轨信息")
+            last_pause_check = time.time()
+            last_time = 0
+            
+            print("\n开始播放音轨:")
+            print(f"消息总数: {len(track_info['messages'])}")
+            
+            # 确保切换到目标窗口
+            if not self._switch_to_game_window():
+                print("无法切换到目标窗口，暂停播放")
+                self.pause()
                 return
             
-            current_time = 0
             for msg in track_info['messages']:
-                if not self.playing or self.paused:
+                if not self.playing:
                     break
                     
-                if msg.time > 0:
-                    time.sleep(msg.time)
-                    current_time += msg.time
+                # 计算相对时间并处理延时
+                relative_time = msg.time - last_time if hasattr(msg, 'time') else 0
+                if relative_time > 0:
+                    time.sleep(relative_time / 1000)
+                last_time = msg.time if hasattr(msg, 'time') else last_time
                 
+                # 定期检查窗口状态
+                current_time = time.time()
+                if current_time - last_pause_check >= self.window_check_interval:
+                    window_active = self._check_active_window()
+                    last_pause_check = current_time
+                    
+                    if not window_active and not self.paused:
+                        print("\n目标窗口失去焦点，自动暂停")
+                        self.auto_paused = True
+                        self.pause()  # 使用统一的暂停处理
+                        continue
+                
+                # 处理暂停状态
+                while self.paused:
+                    time.sleep(0.1)
+                    if not self.playing:  # 如果在暂停时停止播放
+                        break
+                    continue
+
+                if not self.playing:
+                    break
+
+                # 处理音符消息
                 if msg.type == 'note_on' and msg.velocity > 0:
-                    adjusted_note = self._adjust_note(msg.note)
-                    if self.PLAYABLE_MIN <= adjusted_note <= self.PLAYABLE_MAX:
-                        key = NOTE_TO_KEY.get(adjusted_note)
-                        if key:
+                    if track_info.get('channel') is None or msg.channel == track_info['channel']:
+                        note = self._adjust_note(msg.note)
+                        if note in NOTE_TO_KEY:
+                            key = NOTE_TO_KEY[note]
+                            print(f"音符信息: {msg.note}(原始) -> {note}(调整后) -> {key}(按键)")
                             keyboard.press(key)
-                            self._pressed_keys.add(key)
-                
-                elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-                    adjusted_note = self._adjust_note(msg.note)
-                    if self.PLAYABLE_MIN <= adjusted_note <= self.PLAYABLE_MAX:
-                        key = NOTE_TO_KEY.get(adjusted_note)
-                        if key:
+                            time.sleep(0.05)
                             keyboard.release(key)
-                            self._pressed_keys.discard(key)
-                            
+                
+            print("\n音轨播放完成")
+            
         except Exception as e:
-            print(f"播放音轨时出错: {str(e)}")
+            print(f"\n播放音轨时出错: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        finally:
             self._release_all_keys()
 
     def play_midi(self, midi_file, track_index=None):
@@ -645,23 +705,80 @@ class MidiPlayer:
                 print(f"MIDI文件不存在: {midi_file}")
                 return
             
+            # 设置播放状态
+            with self._lock:
+                self.playing = True
+                self.paused = False
+                self.current_file = midi_file
+                self.start_time = time.time() * 1000
+                self.pause_time = 0
+                self.total_pause_time = 0
+            
             # 分析MIDI文件
             mid = mido.MidiFile(midi_file)
+            self._calculate_total_time(mid)  # 计算总时长
             tracks_info = self.analyze_tracks(mid)
             
             if not tracks_info:
                 print("没有找到可播放的音轨")
+                self.stop()
+                return
+            
+            # 确保窗口处于活动状态
+            if not self._switch_to_game_window():
+                print("无法切换到游戏窗口，停止播放")
+                self.stop()
                 return
             
             # 选择要播放的音轨
-            if track_index is None or track_index == 0:  # 播放所有音轨
-                for track in tracks_info:
-                    if self.playing and not self.paused:
-                        self.play_track(track)
-            elif 0 < track_index <= len(tracks_info):  # 播放指定音轨
-                self.play_track(tracks_info[track_index - 1])
-            else:
-                print(f"无效的音轨索引: {track_index}")
+            try:
+                # 将所有音轨的消息按时间顺序合并
+                merged_messages = []
+                
+                # 修正：确保 track_index 是有效的整数
+                if track_index is not None:
+                    try:
+                        track_index = int(track_index)
+                    except ValueError:
+                        track_index = 0
+                
+                print(f"准备播放音轨，索引: {track_index}, 总音轨数: {len(tracks_info)}")
+                
+                if track_index is None or track_index <= 0:  # 播放所有音轨
+                    print("播放所有音轨")
+                    for track in tracks_info:
+                        merged_messages.extend(track['messages'])
+                elif track_index <= len(tracks_info):  # 播放指定音轨
+                    print(f"播放音轨 {track_index}")
+                    merged_messages = tracks_info[track_index - 1]['messages']
+                else:
+                    print(f"无效的音轨索引: {track_index}，音轨数量: {len(tracks_info)}")
+                    self.stop()
+                    return
+                
+                if not merged_messages:
+                    print("没有可播放的消息")
+                    self.stop()
+                    return
+                    
+                # 按时间顺序排序所有消息
+                merged_messages.sort(key=lambda x: x.time)
+                print(f"总消息数: {len(merged_messages)}")
+                
+                # 创建一个包含所有消息的单一音轨信息
+                merged_track = {
+                    'messages': merged_messages,
+                    'channel': None  # 允许所有通道
+                }
+                
+                # 播放合并后的音轨
+                self.play_track(merged_track)
+                
+            except Exception as e:
+                print(f"播放音轨时出错: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                self.stop()
                 
         except Exception as e:
             print(f"播放MIDI文件时出错: {str(e)}")

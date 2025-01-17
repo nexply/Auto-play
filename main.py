@@ -132,22 +132,37 @@ class MainWindow(QMainWindow):
             }
         """)
         
-        self.midi_player = MidiPlayer()
-        self.midi_files = []
+        # 初始化预览状态
+        self.is_previewing = False
+        
+        # 初始化pygame mixer（如果还没有初始化）
+        if not pygame.mixer.get_init():
+            try:
+                pygame.mixer.init(frequency=44100)
+            except Exception as e:
+                print(f"初始化音频系统失败: {str(e)}")
+        
+        # 初始化其他属性
         self.current_index = -1
+        self.midi_files = []
+        self.midi_player = MidiPlayer()
+        # 连接窗口切换失败信号
+        self.midi_player.window_switch_failed.connect(self.handle_window_switch_failed)
         
         # 用于更新进度条的计时器
         self.progress_timer = QTimer(self)
         self.progress_timer.timeout.connect(self.update_progress)
         self.progress_timer.setInterval(100)  # 每100ms更新一次
         
-        # 初始化pygame mixer
-        try:
-            pygame.mixer.init()
-        except Exception as e:
-            print(f"初始化音频系统失败: {str(e)}")
+        # 预览按钮
+        self.preview_button = QPushButton("预览")
+        self.preview_button.clicked.connect(self.toggle_preview)
+        self.preview_button.setEnabled(False)  # 初始状态禁用
         
-        self.is_previewing = False
+        # 添加窗口状态检查定时器
+        self.window_check_timer = QTimer()
+        self.window_check_timer.timeout.connect(self.check_window_state)
+        self.window_check_timer.start(200)  # 每200ms检查一次
         
         self.setup_ui()
         self.setup_keyboard_hooks()
@@ -165,32 +180,26 @@ class MainWindow(QMainWindow):
             self.load_directory(self.last_directory)
 
     def closeEvent(self, event):
-        """重写关闭事件，确保正确清理资源"""
-        # 停止预览
-        if self.is_previewing:
-            self.stop_preview()
-        
-        # 清理pygame
+        """关闭窗口时的处理"""
         try:
-            pygame.mixer.quit()
+            # 停止预览
+            if hasattr(self, 'is_previewing') and self.is_previewing:
+                self.stop_preview()
+            
+            # 停止播放
+            if hasattr(self, 'midi_player'):
+                self.midi_player.stop()
+            
+            # 保存配置
+            if hasattr(self, 'config'):
+                self.config['last_directory'] = self.last_directory
+                self.config_manager.save(self.config)
+            
+            event.accept()
+            
         except Exception as e:
-            print(f"清理pygame时出错: {e}")
-        
-        # 停止播放
-        if self.midi_player.playing:
-            self.midi_player.stop()
-        
-        # 停止所有计时器
-        self.stop_timers()
-        
-        # 保存配置
-        self.save_config()
-        
-        # 移除所有键盘钩子
-        keyboard.unhook_all()
-        
-        # 退出应用程序
-        QApplication.quit()
+            print(f"关闭窗口时出错: {str(e)}")
+            event.accept()
 
     def quit_application(self):
         """退出应用程序"""
@@ -224,123 +233,146 @@ class MainWindow(QMainWindow):
 
     def setup_ui(self):
         """设置UI界面"""
-        # 创建主窗口部件
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        # 创建主布局
-        main_layout = QHBoxLayout(central_widget)
-        
-        # 左侧布局
-        left_widget = QWidget()
-        left_widget.setFixedWidth(260)
-        left_layout = QVBoxLayout(left_widget)
-        
-        # 添加置顶复选框
-        top_layout = QHBoxLayout()
-        self.stay_on_top = QCheckBox("窗口置顶")
-        self.stay_on_top.stateChanged.connect(self.toggle_stay_on_top)
-        top_layout.addWidget(self.stay_on_top)
-        top_layout.addStretch()
-        left_layout.addLayout(top_layout)
-        
-        # 文件选择按钮
-        self.file_button = QPushButton("选择MIDI文件夹")
-        self.file_button.clicked.connect(self.select_directory)
-        left_layout.addWidget(self.file_button)
-        
-        # 搜索框
-        search_layout = QHBoxLayout()
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("搜索歌曲...")
-        self.search_input.textChanged.connect(self.filter_songs)
-        search_layout.addWidget(self.search_input)
-        left_layout.addLayout(search_layout)
-        
-        # 歌曲列表
-        self.song_list = QListWidget()
-        self.song_list.itemSelectionChanged.connect(self.song_selected)
-        left_layout.addWidget(self.song_list)
-        
-        main_layout.addWidget(left_widget)
-        
-        # 右侧布局
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        
-        # 音轨选择标题
-        track_label = QLabel("选择音轨:")
-        track_label.setStyleSheet("QLabel { padding: 5px; }")
-        right_layout.addWidget(track_label)
-        
-        # 音轨列表
-        self.tracks_list = QListWidget()
-        self.tracks_list.itemSelectionChanged.connect(self.track_selected)
-        right_layout.addWidget(self.tracks_list)
-        
-        # 添加时间显示
-        self.time_label = QLabel("剩余时间: 00:00")
-        self.time_label.setAlignment(Qt.AlignCenter)
-        self.time_label.setStyleSheet("QLabel { padding: 5px; }")
-        right_layout.addWidget(self.time_label)
-        
-        # 修改控制按钮布局
-        control_layout = QHBoxLayout()
-        
-        # 合并播放/暂停按钮
-        self.play_pause_button = QPushButton("播放")
-        self.play_pause_button.setEnabled(False)
-        self.play_pause_button.clicked.connect(self.toggle_play)
-        control_layout.addWidget(self.play_pause_button)
-        
-        # 停止按钮
-        self.stop_button = QPushButton("停止")
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self.stop_playback)
-        control_layout.addWidget(self.stop_button)
-        
-        # 预览按钮
-        self.preview_button = QPushButton("预览")
-        self.preview_button.setEnabled(False)
-        self.preview_button.clicked.connect(self.toggle_preview)
-        control_layout.addWidget(self.preview_button)
-        
-        right_layout.addLayout(control_layout)
-        
-        # 添加说明文字（移到底部）
-        right_layout.addStretch()  # 添加弹性空间
-        
-        # 添加使用说明
-        usage_label = QLabel("注意：工具支持36键模式!\n使用说明：\n1. 使用管理员权限启动\n2. 选择MIDI文件\n3. 选择要播放的音轨\n4. 点击播放按钮开始演奏")
-        usage_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 10px; border-radius: 5px; }")
-        right_layout.addWidget(usage_label)
-        
-        # 添加快捷键说明
-        shortcut_label = QLabel("快捷键说明：\nAlt + 减号键(-) 播放/暂停\nAlt + 等号键(=) 停止播放\nAlt + 方向键上 上一首\nAlt + 方向键下 下一首")
-        shortcut_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 10px; border-radius: 5px; }")
-        right_layout.addWidget(shortcut_label)
-        
-        main_layout.addWidget(right_widget)
+        try:
+            # 创建主窗口部件
+            central_widget = QWidget()
+            self.setCentralWidget(central_widget)
+            
+            # 创建主布局
+            main_layout = QHBoxLayout(central_widget)
+            
+            # 左侧布局
+            left_widget = QWidget()
+            left_widget.setFixedWidth(260)
+            left_layout = QVBoxLayout(left_widget)
+            
+            # 添加置顶复选框
+            top_layout = QHBoxLayout()
+            self.stay_on_top = QCheckBox("窗口置顶")
+            self.stay_on_top.stateChanged.connect(self.toggle_stay_on_top)
+            top_layout.addWidget(self.stay_on_top)
+            top_layout.addStretch()
+            left_layout.addLayout(top_layout)
+            
+            # 文件选择按钮
+            self.file_button = QPushButton("选择MIDI文件夹")
+            self.file_button.clicked.connect(self.select_directory)
+            left_layout.addWidget(self.file_button)
+            
+            # 搜索框
+            search_layout = QHBoxLayout()
+            self.search_input = QLineEdit()
+            self.search_input.setPlaceholderText("搜索歌曲...")
+            self.search_input.textChanged.connect(self.filter_songs)
+            search_layout.addWidget(self.search_input)
+            left_layout.addLayout(search_layout)
+            
+            # 歌曲列表
+            self.song_list = QListWidget()
+            self.song_list.itemSelectionChanged.connect(self.song_selected)
+            left_layout.addWidget(self.song_list)
+            
+            main_layout.addWidget(left_widget)
+            
+            # 右侧布局
+            right_widget = QWidget()
+            right_layout = QVBoxLayout(right_widget)
+            
+            # 创建音轨详情区域的垂直布局
+            tracks_layout = QVBoxLayout()
+            
+            # 修改音轨列表标签为详情展示
+            tracks_label = QLabel("音轨详情")
+            tracks_label.setStyleSheet("""
+                QLabel {
+                    font-size: 14px;
+                    font-weight: bold;
+                    color: #333333;
+                    padding: 5px;
+                }
+            """)
+            tracks_layout.addWidget(tracks_label)
+            
+            # 添加当前歌曲名称标签
+            self.current_song_label = QLabel("当前歌曲：未选择")
+            self.current_song_label.setStyleSheet("""
+                QLabel {
+                    font-size: 13px;
+                    color: #666666;
+                    padding: 2px 5px;
+                }
+            """)
+            tracks_layout.addWidget(self.current_song_label)
+            
+            # 创建音轨列表
+            self.tracks_list = QListWidget()
+            self.tracks_list.itemSelectionChanged.connect(self.track_selected)
+            tracks_layout.addWidget(self.tracks_list)
+            
+            right_layout.addLayout(tracks_layout)
+            
+            # 添加时间显示
+            self.time_label = QLabel("剩余时间: 00:00")
+            self.time_label.setAlignment(Qt.AlignCenter)
+            self.time_label.setStyleSheet("QLabel { padding: 5px; }")
+            right_layout.addWidget(self.time_label)
+            
+            # 修改控制按钮布局
+            control_layout = QHBoxLayout()
+            
+            # 播放/暂停按钮
+            self.play_button = QPushButton("播放")
+            self.play_button.setEnabled(False)
+            self.play_button.clicked.connect(self.toggle_play)
+            control_layout.addWidget(self.play_button)
+            
+            # 停止按钮
+            self.stop_button = QPushButton("停止")
+            self.stop_button.setEnabled(False)
+            self.stop_button.clicked.connect(self.stop_playback)
+            control_layout.addWidget(self.stop_button)
+            
+            # 预览按钮
+            self.preview_button = QPushButton("预览")
+            self.preview_button.clicked.connect(self.toggle_preview)
+            self.preview_button.setEnabled(False)
+            control_layout.addWidget(self.preview_button)
+            
+            right_layout.addLayout(control_layout)
+            
+            # 添加说明文字（移到底部）
+            right_layout.addStretch()
+            
+            # 添加使用说明
+            usage_label = QLabel("注意：工具支持36键模式!\n使用说明：\n1. 使用管理员权限启动\n2. 选择MIDI文件\n3. 选择要播放的音轨\n4. 点击播放按钮开始演奏")
+            usage_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 10px; border-radius: 5px; }")
+            right_layout.addWidget(usage_label)
+            
+            # 添加快捷键说明
+            shortcut_label = QLabel("快捷键说明：\nAlt + 减号键(-) 播放/暂停\nAlt + 等号键(=) 停止播放")
+            shortcut_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 10px; border-radius: 5px; }")
+            right_layout.addWidget(shortcut_label)
+            
+            main_layout.addWidget(right_widget)
+            
+        except Exception as e:
+            print(f"设置UI界面时出错: {str(e)}")
 
     def setup_keyboard_hooks(self):
-        """设置全局键盘钩子"""
+        """设置键盘快捷键"""
         try:
-            # 使用CONTROL_KEYS中定义的组合键
-            keyboard.add_hotkey(CONTROL_KEYS['START_PAUSE'], 
-                              lambda: self.safe_key_handler(self.pause_playback))
-            keyboard.add_hotkey(CONTROL_KEYS['STOP'], 
-                              lambda: self.safe_key_handler(self.stop_playback))
-            keyboard.add_hotkey(CONTROL_KEYS['PREV_SONG'], 
-                              lambda: self.safe_key_handler(lambda: self.change_song(-1)))
-            keyboard.add_hotkey(CONTROL_KEYS['NEXT_SONG'], 
-                              lambda: self.safe_key_handler(lambda: self.change_song(1)))
+            # 播放/暂停
+            keyboard.add_hotkey(CONTROL_KEYS['START_PAUSE'], self.toggle_play, 
+                              suppress=True, trigger_on_release=True)
+            
+            # 停止
+            keyboard.add_hotkey(CONTROL_KEYS['STOP'], self.stop_playback,
+                              suppress=True, trigger_on_release=True)
+            
+            print("键盘快捷键设置完成")
+            
         except Exception as e:
-            print(f"设置键盘钩子时出错: {str(e)}")
-            # 尝试清理所有热键
-            try:
-                keyboard.unhook_all()
-            except Exception as e:
-                print(f"清理键盘钩子时出错: {str(e)}")
+            print(f"设置键盘快捷键时出错: {str(e)}")
 
     def safe_key_handler(self, func):
         """安全地处理键盘事件，添加防抖动和状态检查"""
@@ -389,10 +421,10 @@ class MainWindow(QMainWindow):
                 if self.midi_files:
                     self.song_list.setCurrentRow(0)
                     self.current_index = 0
-                    self.play_pause_button.setEnabled(True)
+                    self.play_button.setEnabled(True)
                     self.stop_button.setEnabled(True)
-                    self.play_pause_button.setText("播放")
-                    self.play_pause_button.setStyleSheet("""
+                    self.play_button.setText("播放")
+                    self.play_button.setStyleSheet("""
                         QPushButton {
                             background-color: #5cb85c;
                             color: white;
@@ -440,7 +472,7 @@ class MainWindow(QMainWindow):
                     self.tracks_list.addItem("◆ 全部音轨")
                     
                 # 启用播放和停止按钮
-                self.play_pause_button.setEnabled(True)
+                self.play_button.setEnabled(True)
                 self.stop_button.setEnabled(True)
                 self.preview_button.setEnabled(True)
                 
@@ -481,13 +513,13 @@ class MainWindow(QMainWindow):
             is_paused = self.midi_player.paused
             
             # 更新播放/暂停按钮状态
-            self.play_pause_button.setEnabled(has_file)
+            self.play_button.setEnabled(has_file)
             if is_playing:
                 if is_paused:  # 如果暂停中
-                    self.play_pause_button.setText("继续")
+                    self.play_button.setText("继续")
                 else:  # 如果正在播放
-                    self.play_pause_button.setText("暂停")
-                self.play_pause_button.setStyleSheet("""
+                    self.play_button.setText("暂停")
+                self.play_button.setStyleSheet("""
                     QPushButton {
                         background-color: #f0ad4e;
                         color: white;
@@ -499,8 +531,8 @@ class MainWindow(QMainWindow):
                     }
                 """)
             else:  # 如果未播放
-                self.play_pause_button.setText("播放")
-                self.play_pause_button.setStyleSheet("")
+                self.play_button.setText("播放")
+                self.play_button.setStyleSheet("")
             
             # 更新停止按钮状态
             self.stop_button.setEnabled(is_playing)
@@ -521,15 +553,20 @@ class MainWindow(QMainWindow):
             current_file = self.midi_files[self.current_index]
             current_row = self.tracks_list.currentRow()
             
+            # 确保停止当前播放
+            self.midi_player.stop()
+            
             # 启动播放线程
             self.play_thread = threading.Thread(
                 target=self.midi_player.play_midi,
-                args=(current_file, current_row)
+                args=(current_file, current_row),
+                daemon=True
             )
             self.play_thread.start()
             
             # 更新UI状态
             self.update_ui("playback")
+            print("开始播放")
             
         except Exception as e:
             print(f"开始播放时出错: {str(e)}")
@@ -565,25 +602,40 @@ class MainWindow(QMainWindow):
             print(f"更新UI状态时出错: {str(e)}")
 
     def stop_playback(self):
-        self.midi_player.stop()
-        # 使用 QMetaObject.invokeMethod 在主线程中更新 UI
-        QMetaObject.invokeMethod(self, "update_ui_after_stop",
-                               Qt.QueuedConnection)
+        """停止播放"""
+        try:
+            self.midi_player.stop()
+            if self.play_thread and self.play_thread.is_alive():
+                self.play_thread.join(timeout=1.0)
+            self.play_thread = None
+            self.update_ui("stop")
+            print("停止播放")
+        except Exception as e:
+            print(f"停止播放时出错: {str(e)}")
 
     def pause_playback(self):
-        """处理播放/暂停"""
+        """暂停播放"""
         try:
-            if self.midi_player.playing:
-                self.midi_player.pause()
-                # 使用 QMetaObject.invokeMethod 在主线程中更新 UI
-                QMetaObject.invokeMethod(self, "update_ui_after_pause",
-                                       Qt.QueuedConnection)
+            if not self.midi_player.playing:
+                return
+            
+            if self.midi_player.paused:
+                # 如果当前是暂停状态，尝试恢复播放
+                if self.midi_player.resume():
+                    self.update_ui("playback")  # 更新为播放状态
+                    print("继续播放")
+                else:
+                    # 如果恢复失败（比如找不到窗口），则停止播放
+                    self.stop_playback()
+                    print("无法恢复播放，已停止")
             else:
-                # 只有在有选中的歌曲时才开始播放
-                if self.current_index >= 0:
-                    self.start_playback()
+                # 如果当前是播放状态，尝试暂停
+                if self.midi_player.pause():
+                    self.update_ui("pause")  # 更新为暂停状态
+                    print("暂停播放")
+                
         except Exception as e:
-            print(f"播放/暂停操作时出错: {str(e)}")
+            print(f"暂停播放时出错: {str(e)}")
 
     def change_song(self, delta):
         """切换歌曲"""
@@ -591,18 +643,23 @@ class MainWindow(QMainWindow):
             if not self.midi_files:
                 return
                 
+            # 停止当前播放
+            self.stop_playback()  # 这会触发UI更新
+            
             # 计算新的索引
             new_index = (self.current_index + delta) % len(self.midi_files)
-            if new_index < 0:  # 处理负数索引
+            if new_index < 0:
                 new_index = len(self.midi_files) - 1
                 
             print(f"切换歌曲: 当前索引 {self.current_index}, 新索引 {new_index}")
             
-            # 使用 QMetaObject.invokeMethod 在主线程中更新 UI
-            QMetaObject.invokeMethod(self, "update_ui_after_song_change",
-                                   Qt.QueuedConnection,
-                                   Q_ARG(int, new_index))
-                
+            # 更新索引和UI
+            self.current_index = new_index
+            self.song_list.setCurrentRow(new_index)
+            
+            # 自动开始播放新选择的歌曲
+            self.start_playback()
+            
         except Exception as e:
             print(f"切换歌曲时出错: {str(e)}")
 
@@ -625,56 +682,88 @@ class MainWindow(QMainWindow):
             self.progress_timer.stop()
 
     def update_tracks_list(self):
-        """更新音轨列表"""
+        """更新音轨列表显示"""
         try:
             self.tracks_list.clear()
             
-            # 检查是否有可用的音轨信息
-            if not hasattr(self.midi_player, 'tracks_info') or not self.midi_player.tracks_info:
-                self.tracks_list.addItem("◆ 全部音轨")
-                return
-            
-            # 首先计算所有音轨的总体信息
-            total_notes = 0
-            total_playable = 0
-            min_note = float('inf')
-            max_note = float('-inf')
-            
-            for track in self.midi_player.tracks_info:
-                if 'notes' in track:
-                    track_notes = track['notes']
-                    if track_notes:  # 确保有音符
-                        total_notes += len(track_notes)
-                        min_note = min(min_note, min(track_notes))
-                        max_note = max(max_note, max(track_notes))
-                        playable_notes = sum(1 for note in track_notes 
-                                           if 36 <= (note + self.midi_player.note_offset) <= 96)
-                        total_playable += playable_notes
-            
-            # 添加全部音轨选项，包含详细信息
-            if min_note != float('inf'):
-                adjusted_min = min_note + self.midi_player.note_offset
-                adjusted_max = max_note + self.midi_player.note_offset
-                all_tracks_text = (f"◆ 全部音轨 [原始范围: {min_note}-{max_note}, "
-                                 f"调整后: {adjusted_min}-{adjusted_max}, "
-                                 f"可播放: {total_playable}/{total_notes}]")
+            # 更新当前歌曲名称
+            if 0 <= self.current_index < len(self.midi_files):
+                current_song = os.path.basename(self.midi_files[self.current_index])
+                self.current_song_label.setText(f"当前歌曲：{current_song}")
             else:
-                all_tracks_text = "◆ 全部音轨"
-            self.tracks_list.addItem(all_tracks_text)
+                self.current_song_label.setText("当前歌曲：未选择")
+                return  # 如果没有选择歌曲，直接返回
             
-            # 添加各个音轨的详细信息
-            for i, track in enumerate(self.midi_player.tracks_info):
-                if 'notes' in track and track['notes']:
-                    track_notes = track['notes']
+            # 获取当前MIDI文件
+            current_file = self.midi_files[self.current_index]
+            mid = mido.MidiFile(current_file)
+            
+            # 获取所有音轨的音符信息
+            all_notes = []
+            track_notes_dict = {}
+            
+            # 首先统计所有音轨的音符信息
+            for i, track in enumerate(mid.tracks):
+                track_notes = []
+                track_velocities = []
+                
+                for msg in track:
+                    if msg.type == 'note_on' and msg.velocity > 0:
+                        track_notes.append(msg.note)
+                        track_velocities.append(msg.velocity)
+                        all_notes.append(msg.note)
+                
+                if track_notes:  # 只处理包含音符的音轨
+                    track_notes_dict[i] = {
+                        'notes': track_notes,
+                        'velocity': track_velocities,
+                        'channel': getattr(msg, 'channel', 0)
+                    }
+            
+            # 计算全部音轨的统计信息
+            if all_notes:
+                min_note = min(all_notes)
+                max_note = max(all_notes)
+                total_notes = len(all_notes)
+                playable_notes = sum(1 for note in all_notes 
+                                   if 36 <= (note + self.midi_player.note_offset) <= 96)
+                
+                # 计算平均力度
+                all_velocities = []
+                for track_info in track_notes_dict.values():
+                    all_velocities.extend(track_info['velocity'])
+                avg_velocity = sum(all_velocities) / len(all_velocities) if all_velocities else 0
+                
+                # 添加全部音轨选项，包含详细信息
+                all_tracks_text = (
+                    f"◆ 全部音轨 [音符总数: {total_notes}]\n"
+                    f"├ 音符范围: {min_note}-{max_note} → {min_note + self.midi_player.note_offset}-"
+                    f"{max_note + self.midi_player.note_offset}\n"
+                    f"├ 可播放: {playable_notes}/{total_notes} ({playable_notes/total_notes*100:.1f}%)\n"
+                    f"└ 平均力度: {avg_velocity:.1f}"
+                )
+                self.tracks_list.addItem(all_tracks_text)
+                
+                # 添加各个音轨的详细信息
+                for i, track_info in track_notes_dict.items():
+                    track_notes = track_info['notes']
+                    velocities = track_info['velocity']
+                    channel = track_info['channel']
+                    
                     min_note = min(track_notes)
                     max_note = max(track_notes)
-                    adjusted_min = min_note + self.midi_player.note_offset
-                    adjusted_max = max_note + self.midi_player.note_offset
+                    total_notes = len(track_notes)
                     playable_notes = sum(1 for note in track_notes 
                                        if 36 <= (note + self.midi_player.note_offset) <= 96)
-                    track_text = (f"◇ 音轨 {i} [原始范围: {min_note}-{max_note}, "
-                                f"调整后: {adjusted_min}-{adjusted_max}, "
-                                f"可播放: {playable_notes}/{len(track_notes)}]")
+                    avg_velocity = sum(velocities) / len(velocities) if velocities else 0
+                    
+                    track_text = (
+                        f"◇ 音轨 {i} [音符数: {total_notes}, 通道: {channel}]\n"
+                        f"├ 音符范围: {min_note}-{max_note} → "
+                        f"{min_note + self.midi_player.note_offset}-{max_note + self.midi_player.note_offset}\n"
+                        f"├ 可播放: {playable_notes}/{total_notes} ({playable_notes/total_notes*100:.1f}%)\n"
+                        f"└ 平均力度: {avg_velocity:.1f}"
+                    )
                     self.tracks_list.addItem(track_text)
             
             # 默认选择全部音轨
@@ -785,23 +874,87 @@ class MainWindow(QMainWindow):
                 self.pause_playback()
             elif event.key() == Qt.Key_Equal:  # 等号键
                 self.stop_playback()
-            elif event.key() == Qt.Key_Up:  # 上箭头
-                self.change_song(-1)
-            elif event.key() == Qt.Key_Down:  # 下箭头
-                self.change_song(1)
 
-    def update_ui(self, update_type):
-        """统一处理UI更新"""
-        if update_type == "playback":
-            self.update_button_states()
-            if not self.progress_timer.isActive():
-                self.progress_timer.start()
-        elif update_type == "stop":
-            self.update_button_states()
-            if self.progress_timer.isActive():
-                self.progress_timer.stop()
-            self.time_label.setText("剩余时间: 00:00")
-        # ... 其他更新类型 ...
+    def update_ui(self, state):
+        """更新UI状态"""
+        try:
+            if state == "playback":
+                # 播放状态，显示暂停按钮
+                self.play_button.setText("暂停")
+                self.play_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f0ad4e;
+                        color: white;
+                        border: 1px solid #eea236;
+                    }
+                    QPushButton:hover {
+                        background-color: #ec971f;
+                        border-color: #d58512;
+                    }
+                """)
+                self.stop_button.setEnabled(True)
+                self.preview_button.setEnabled(False)
+                
+            elif state == "pause":
+                # 暂停状态，显示继续按钮
+                self.play_button.setText("继续")
+                self.play_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #5bc0de;
+                        color: white;
+                        border: 1px solid #46b8da;
+                    }
+                    QPushButton:hover {
+                        background-color: #31b0d5;
+                        border-color: #269abc;
+                    }
+                """)
+                self.stop_button.setEnabled(True)
+                self.preview_button.setEnabled(False)
+                
+            elif state == "stop":
+                # 停止状态，显示播放按钮
+                self.play_button.setText("播放")
+                self.play_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #5cb85c;
+                        color: white;
+                        border: 1px solid #4cae4c;
+                    }
+                    QPushButton:hover {
+                        background-color: #449d44;
+                        border-color: #398439;
+                    }
+                    QPushButton:disabled {
+                        background-color: #f0f0f0;
+                        color: #888;
+                        border: 1px solid #ccc;
+                    }
+                """)
+                self.stop_button.setEnabled(False)
+                self.preview_button.setEnabled(True)
+                
+                # 重置播放状态
+                if hasattr(self, 'midi_player'):
+                    self.midi_player.playing = False
+                    self.midi_player.paused = False
+                
+        except Exception as e:
+            print(f"更新UI状态时出错: {str(e)}")
+
+    def check_window_state(self):
+        """定期检查窗口状态并更新UI"""
+        try:
+            if self.midi_player.playing:
+                if self.midi_player.auto_paused:
+                    self.update_ui("pause")  # 自动暂停时更新UI
+                elif not self.midi_player.paused:  # 如果不是暂停状态，确保显示为播放状态
+                    self.update_ui("playback")
+                elif self.midi_player.paused and not self.midi_player.auto_paused:
+                    # 如果是手动暂停状态，确保显示为暂停状态
+                    self.update_ui("pause")
+        except Exception as e:
+            print(f"检查窗口状态时出错: {str(e)}")
 
     def load_directory(self, dir_path):
         """加载指定目录的MIDI文件"""
@@ -849,117 +1002,122 @@ class MainWindow(QMainWindow):
             current_file = self.midi_files[self.current_index]
             
             # 停止当前播放
-            pygame.mixer.music.stop()
+            if pygame.mixer.music.get_busy():
+                pygame.mixer.music.stop()
+            
+            # 获取当前选中的音轨
+            current_row = self.tracks_list.currentRow()
+            if current_row < 0:
+                return
+            
+            # 加载MIDI文件
+            mid = mido.MidiFile(current_file)
+            
+            # 创建临时MIDI文件用于预览
+            preview_mid = mido.MidiFile()
+            preview_mid.ticks_per_beat = mid.ticks_per_beat
+            
+            # 创建控制轨道
+            control_track = mido.MidiTrack()
+            preview_mid.tracks.append(control_track)
+            
+            # 处理音轨
+            if current_row == 0:  # 全部音轨
+                for track in mid.tracks:
+                    track_copy = mido.MidiTrack()
+                    for msg in track:
+                        if msg.type in ['note_on', 'note_off']:
+                            msg_copy = msg.copy()
+                            if hasattr(msg, 'note'):
+                                adjusted_note = msg.note + self.midi_player.note_offset
+                                if 36 <= adjusted_note <= 96:
+                                    msg_copy.note = adjusted_note
+                                    track_copy.append(msg_copy)
+                        elif msg.type in ['set_tempo', 'time_signature']:
+                            control_track.append(msg.copy())
+                    if len(track_copy) > 0:
+                        preview_mid.tracks.append(track_copy)
+            else:  # 单个音轨
+                track_index = current_row - 1
+                if track_index < len(mid.tracks):
+                    track = mid.tracks[track_index]
+                    track_copy = mido.MidiTrack()
+                    for msg in track:
+                        if msg.type in ['note_on', 'note_off']:
+                            msg_copy = msg.copy()
+                            if hasattr(msg, 'note'):
+                                adjusted_note = msg.note + self.midi_player.note_offset
+                                if 36 <= adjusted_note <= 96:
+                                    msg_copy.note = adjusted_note
+                                    track_copy.append(msg_copy)
+                        elif msg.type in ['set_tempo', 'time_signature']:
+                            control_track.append(msg.copy())
+                    if len(track_copy) > 0:
+                        preview_mid.tracks.append(track_copy)
+            
+            if len(preview_mid.tracks) <= 1:  # 只有控制轨道
+                print("没有可播放的音符")
+                return
+            
+            # 修改临时文件的创建方式：直接在当前目录创建
+            temp_file = f"_preview_{os.path.basename(current_file)}"
             
             try:
-                # 获取当前选中的音轨
-                current_row = self.tracks_list.currentRow()
-                if current_row < 0:
-                    return
-                
-                # 创建临时MIDI文件用于预览
-                mid = mido.MidiFile(current_file)
-                preview_mid = mido.MidiFile()
-                preview_mid.ticks_per_beat = mid.ticks_per_beat
-                
-                # 创建一个包含所有控制消息的轨道
-                control_track = mido.MidiTrack()
-                
-                # 如果选择"全部音轨"（索引0），则添加所有音轨
-                if current_row == 0:
-                    # 首先收集所有控制消息
-                    for track in mid.tracks:
-                        for msg in track:
-                            # 复制所有控制类消息到控制轨道
-                            if msg.type in ['set_tempo', 'time_signature', 'key_signature', 
-                                          'program_change', 'control_change']:
-                                control_track.append(msg.copy())
-                    
-                    # 添加控制轨道
-                    preview_mid.tracks.append(control_track)
-                    
-                    # 然后添加所有音轨的音符（应用音高调整）
-                    for track in mid.tracks:
-                        track_copy = mido.MidiTrack()
-                        for msg in track:
-                            if msg.type == 'note_on' or msg.type == 'note_off':
-                                msg_copy = msg.copy()
-                                # 只对 note_on 和 note_off 消息调整音高
-                                adjusted_note = self.midi_player._adjust_note(msg.note)
-                                if self.midi_player.PLAYABLE_MIN <= adjusted_note <= self.midi_player.PLAYABLE_MAX:
-                                    msg_copy.note = adjusted_note
-                                    track_copy.append(msg_copy)
-                        if len(track_copy) > 0:  # 只添加包含音符的音轨
-                            preview_mid.tracks.append(track_copy)
-                else:
-                    # 否则只添加选中的音轨
-                    track_index = current_row - 1  # 减1是因为第一项是"全部音轨"
-                    if 0 <= track_index < len(mid.tracks):
-                        # 首先添加原始轨道的控制消息
-                        for msg in mid.tracks[track_index]:
-                            if msg.type in ['set_tempo', 'time_signature', 'key_signature', 
-                                          'program_change', 'control_change']:
-                                control_track.append(msg.copy())
-                        preview_mid.tracks.append(control_track)
-                        
-                        # 然后添加音符消息（应用音高调整）
-                        track_copy = mido.MidiTrack()
-                        for msg in mid.tracks[track_index]:
-                            if msg.type == 'note_on' or msg.type == 'note_off':
-                                msg_copy = msg.copy()
-                                # 只对 note_on 和 note_off 消息调整音高
-                                adjusted_note = self.midi_player._adjust_note(msg.note)
-                                if self.midi_player.PLAYABLE_MIN <= adjusted_note <= self.midi_player.PLAYABLE_MAX:
-                                    msg_copy.note = adjusted_note
-                                    track_copy.append(msg_copy)
-                        if len(track_copy) > 0:
-                            preview_mid.tracks.append(track_copy)
-                
-                # 确保至少有一个音轨
-                if len(preview_mid.tracks) < 1:
-                    print("没有找到可播放的音轨")
-                    return
-                
-                # 创建临时文件
-                temp_dir = os.path.dirname(current_file)
-                if not os.path.exists(temp_dir):
-                    temp_dir = os.path.dirname(os.path.abspath(__file__))
-                temp_file = os.path.join(temp_dir, f"_temp_preview_{os.path.basename(current_file)}")
-                
-                try:
-                    preview_mid.save(temp_file)
-                    pygame.mixer.music.load(temp_file)
-                    pygame.mixer.music.play()
-                    
-                    # 更新状态和按钮
-                    self.is_previewing = True
-                    self.preview_button.setText("停止预览")
-                    self.preview_button.setStyleSheet("""
-                        QPushButton {
-                            background-color: #d9534f;
-                            color: white;
-                            border: 1px solid #d43f3a;
-                        }
-                        QPushButton:hover {
-                            background-color: #c9302c;
-                            border-color: #ac2925;
-                        }
-                    """)
-                finally:
-                    # 确保在加载后删除临时文件
+                # 如果已存在同名临时文件，先删除
+                if os.path.exists(temp_file):
                     try:
-                        if os.path.exists(temp_file):
-                            os.remove(temp_file)
+                        os.remove(temp_file)
                     except Exception as e:
-                        print(f"删除临时文件时出错: {str(e)}")
+                        print(f"删除已存在的临时文件失败: {str(e)}")
+                        return
+                    
+                # 保存并播放预览文件
+                preview_mid.save(temp_file)
+                pygame.mixer.music.load(temp_file)
+                pygame.mixer.music.play()
                 
-            except Exception as e:
-                print(f"预览MIDI文件时出错: {str(e)}")
-                self.stop_preview()
+                # 更新状态和按钮
+                self.is_previewing = True
+                self.preview_button.setText("停止预览")
+                self.preview_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #d9534f;
+                        color: white;
+                        border: 1px solid #d43f3a;
+                    }
+                    QPushButton:hover {
+                        background-color: #c9302c;
+                        border-color: #ac2925;
+                    }
+                """)
+                
+                # 添加预览完成检测
+                self.preview_check_timer = QTimer()
+                self.preview_check_timer.timeout.connect(self.check_preview_status)
+                self.preview_check_timer.start(100)  # 每100ms检查一次
+                
+            finally:
+                # 设置延迟删除临时文件
+                QTimer.singleShot(1000, lambda: self.cleanup_temp_file(temp_file))
                 
         except Exception as e:
-            print(f"开始预览时出错: {str(e)}")
+            print(f"预览时出错: {str(e)}")
             self.stop_preview()
+
+    def check_preview_status(self):
+        """检查预览播放状态"""
+        if self.is_previewing and not pygame.mixer.music.get_busy():
+            self.stop_preview()
+            if hasattr(self, 'preview_check_timer') and self.preview_check_timer.isActive():
+                self.preview_check_timer.stop()
+
+    def cleanup_temp_file(self, file_path):
+        """清理临时文件"""
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            print(f"清理临时文件失败: {str(e)}")
 
     def stop_preview(self):
         """停止预览"""
@@ -967,7 +1125,36 @@ class MainWindow(QMainWindow):
             pygame.mixer.music.stop()
             self.is_previewing = False
             self.preview_button.setText("预览")
-            self.preview_button.setStyleSheet("")
+            # 设置默认样式而不是清空样式表
+            self.preview_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #ffffff;
+                    border: 1px solid #cccccc;
+                    border-radius: 4px;
+                    padding: 5px 15px;
+                    min-width: 80px;
+                    color: #333333;
+                    font-size: 14px;
+                }
+                QPushButton:hover {
+                    background-color: #e6e6e6;
+                    border-color: #adadad;
+                }
+                QPushButton:pressed {
+                    background-color: #d4d4d4;
+                    border-color: #8c8c8c;
+                }
+                QPushButton:disabled {
+                    background-color: #f0f0f0;
+                    color: #888;
+                    border: 1px solid #ccc;
+                }
+            """)
+            
+            # 停止预览状态检查定时器
+            if hasattr(self, 'preview_check_timer') and self.preview_check_timer.isActive():
+                self.preview_check_timer.stop()
+            
         except Exception as e:
             print(f"停止预览时出错: {str(e)}")
 
@@ -1030,6 +1217,57 @@ class MainWindow(QMainWindow):
                 
         except Exception as e:
             print(f"加载音轨时出错: {str(e)}")
+
+    def song_list_clicked(self):
+        """处理歌曲列表点击事件"""
+        try:
+            # 检查是否在播放或暂停状态
+            if self.midi_player.playing:
+                # 显示提示信息
+                print("请先停止当前播放再选择新歌曲")
+                # 恢复之前的选中状态
+                if 0 <= self.current_index < self.song_list.count():
+                    self.song_list.setCurrentRow(self.current_index)
+                return
+            
+            new_index = self.song_list.currentRow()
+            if new_index != self.current_index:
+                # 更新索引
+                self.current_index = new_index
+                print(f"选择新歌曲: 索引 {new_index}")
+                
+                # 更新音轨列表
+                if 0 <= new_index < len(self.midi_files):
+                    try:
+                        mid = mido.MidiFile(self.midi_files[new_index])
+                        self.midi_player.analyze_tracks(mid)
+                        self.update_tracks_list()
+                    except Exception as e:
+                        print(f"加载MIDI文件失败: {str(e)}")
+                        return
+                
+                # 启用播放按钮
+                self.play_button.setEnabled(True)
+                self.stop_button.setEnabled(False)  # 新选择歌曲时停止按钮应该禁用
+                self.preview_button.setEnabled(True)
+                
+                # 如果正在预览，停止预览
+                if self.is_previewing:
+                    self.stop_preview()
+                
+        except Exception as e:
+            print(f"处理歌曲选择时出错: {str(e)}")
+
+    def handle_window_switch_failed(self):
+        """处理窗口切换失败的情况"""
+        try:
+            # 停止播放
+            self.stop_playback()
+            # 更新UI状态
+            self.update_ui("stop")
+            print("由于无法找到目标窗口，已停止播放")
+        except Exception as e:
+            print(f"处理窗口切换失败时出错: {str(e)}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

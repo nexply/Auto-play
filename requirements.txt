@@ -1,7 +1,18 @@
+# GUI
 PyQt5>=5.15.0
+
+# 键盘控制
 keyboard>=0.13.5
+
+# MIDI处理
 mido>=1.2.10
 python-rtmidi>=1.4.9
+
+# Windows系统支持
 pywin32>=305
+
+# 打包工具
 pyinstaller>=5.13.0
+
+# 音频处理
 pygame>=2.5.0 

@@ -1,7 +1,8 @@
 import os
 import shutil
 import re
-from PyInstaller.__main__ import run
+import sys
+import subprocess
 
 def get_version():
     """从main.py中获取版本号"""
@@ -31,8 +32,29 @@ def clean_build():
                 os.remove(file)
                 print(f"已删除 {file}")
 
+def ensure_pyinstaller():
+    """确保 PyInstaller 正确安装"""
+    try:
+        # 尝试导入 PyInstaller
+        import PyInstaller
+        return True
+    except ImportError:
+        print("正在重新安装 PyInstaller...")
+        try:
+            # 使用 subprocess 运行 pip 命令
+            subprocess.check_call([sys.executable, '-m', 'pip', 'uninstall', 'pyinstaller', '-y'])
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pyinstaller'])
+            return True
+        except Exception as e:
+            print(f"安装 PyInstaller 失败: {str(e)}")
+            return False
+
 def build_exe():
     """构建exe文件"""
+    # 确保 PyInstaller 已正确安装
+    if not ensure_pyinstaller():
+        return False
+        
     # 获取版本号和设置输出目录
     version = get_version()
     output_dir = "dist/yyslsAuto-play"
@@ -48,46 +70,50 @@ def build_exe():
         print("错误: 未找到 runtime_hook.py")
         return False
     
-    # PyInstaller 参数
-    args = [
-        'main.py',
-        f'--name={exe_name}',  # 输出文件名包含版本号
-        '--onefile',
-        '--windowed',
-        f'--icon={icon_path}',
-        '--clean',
-        f'--runtime-hook={runtime_hook}',
-        '--add-data=icon.ico;.',
-        '--uac-admin',
-        '--hidden-import=win32gui',
-        '--hidden-import=win32con',
-        '--hidden-import=keyboard',
-        '--hidden-import=mido',
-        '--hidden-import=rtmidi',
-        '--hidden-import=json',
-        '--hidden-import=PyQt5',
-        '--hidden-import=PyQt5.QtCore',
-        '--hidden-import=PyQt5.QtGui',
-        '--hidden-import=PyQt5.QtWidgets',
-        '--hidden-import=pygame',
-        '--hidden-import=pygame.mixer',
-        '--hidden-import=pygame._sdl2',
-        '--hidden-import=pygame._sdl2.audio',
-        '--hidden-import=pygame.mixer_music',
-        '--exclude-module=matplotlib',
-        '--exclude-module=numpy',
-        '--exclude-module=pandas',
-        '--exclude-module=scipy',
-        '--exclude-module=PIL',
-        f'--distpath={output_dir}'  # 指定输出目录
-    ]
-    
     try:
         # 清理旧的构建文件
         clean_build()
         
         print(f"开始构建版本 {version}...")
-        run(args)
+        
+        # 使用 subprocess 运行 PyInstaller
+        cmd = [
+            sys.executable,
+            '-m',
+            'PyInstaller',
+            'main.py',
+            f'--name={exe_name}',
+            '--onefile',
+            '--windowed',
+            f'--icon={icon_path}',
+            '--clean',
+            f'--runtime-hook={runtime_hook}',
+            '--add-data=icon.ico;.',
+            '--uac-admin',
+            '--hidden-import=win32gui',
+            '--hidden-import=win32con',
+            '--hidden-import=keyboard',
+            '--hidden-import=mido',
+            '--hidden-import=rtmidi',
+            '--hidden-import=json',
+            '--hidden-import=PyQt5',
+            '--hidden-import=PyQt5.QtCore',
+            '--hidden-import=PyQt5.QtGui',
+            '--hidden-import=PyQt5.QtWidgets',
+            '--hidden-import=pygame',
+            '--hidden-import=pygame.mixer',
+            '--hidden-import=pygame._sdl2',
+            '--hidden-import=pygame._sdl2.audio',
+            '--hidden-import=pygame.mixer_music',
+            '--exclude-module=matplotlib',
+            '--exclude-module=numpy',
+            '--exclude-module=pandas',
+            '--exclude-module=scipy',
+            '--exclude-module=PIL',
+            f'--distpath={output_dir}'
+        ]
+        
+        subprocess.check_call(cmd)
         
         # 检查构建结果
         exe_path = os.path.join(output_dir, f"{exe_name}.exe")

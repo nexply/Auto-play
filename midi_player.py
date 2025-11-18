@@ -226,24 +226,43 @@ class MidiPlayer(QObject):  # 继承QObject以支持信号
         """分析MIDI文件的音轨"""
         try:
             tracks_info = []
+
+            # 分析每条音轨，计算每个消息的绝对时间（毫秒），并考虑 tempo 变化
             for track in mid.tracks:
                 messages = []
-                current_time = 0
-                
+
+                # 使用累计秒数来保存绝对时间（秒），并考虑 tempo 事件的影响
+                cumulative_seconds = 0.0
+                current_tempo = 500000  # 默认 tempo (microseconds per beat)
+
                 for msg in track:
-                    current_time += msg.time
+                    # msg.time 在 mido 中是 delta ticks
+                    delta_ticks = msg.time
+                    # 将 delta ticks 转换为秒，使用当前 tempo
+                    try:
+                        delta_seconds = mido.tick2second(delta_ticks, mid.ticks_per_beat, current_tempo)
+                    except Exception:
+                        # 兜底：如果转换失败，按原始 ticks/1000 近似
+                        delta_seconds = (delta_ticks / mid.ticks_per_beat) * (current_tempo / 1000000.0)
+
+                    cumulative_seconds += delta_seconds
+
+                    # 如果遇到 tempo 改变，影响后续消息的时间计算
+                    if msg.type == 'set_tempo' and hasattr(msg, 'tempo'):
+                        current_tempo = msg.tempo
+
                     if msg.type in ['note_on', 'note_off']:
-                        # 创建消息的副本，并设置绝对时间
+                        # 创建消息的副本，并设置绝对时间（毫秒）
                         msg_copy = msg.copy()
-                        msg_copy.time = current_time
+                        msg_copy.time = int(cumulative_seconds * 1000)
                         messages.append(msg_copy)
-                
+
                 if messages:
                     tracks_info.append({
                         'messages': messages,
                         'channel': None
                     })
-            
+
             return tracks_info
             
         except Exception as e:

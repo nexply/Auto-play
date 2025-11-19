@@ -233,7 +233,7 @@ class MidiPlayer(QObject):  # 继承QObject以支持信号
 
                 # 使用累计秒数来保存绝对时间（秒），并考虑 tempo 事件的影响
                 cumulative_seconds = 0.0
-                current_tempo = 500000  # 默认 tempo (microseconds per beat)
+                current_tempo = 350000  # 默认 tempo (microseconds per beat)
 
                 for msg in track:
                     # msg.time 在 mido 中是 delta ticks

@@ -705,7 +705,7 @@ class MidiPlayer(QObject):  # 继承QObject以支持信号
                             key = NOTE_TO_KEY[note]
                             print(f"音符信息: {msg.note}(原始) -> {note}(调整后) -> {key}(按键)")
                             keyboard.press(key)
-                            time.sleep(0.05)
+                            time.sleep(0.0001)
                             keyboard.release(key)
                 
             print("\n音轨播放完成")
